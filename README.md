@@ -56,12 +56,35 @@ app/src/main/java/com/voiceclear/app/
     └── MetricsCollector.kt      #   分阶段耗时与结果状态（本地、不含内容）
 ```
 
+## 安装与真机测试
+
+```bash
+./gradlew :app:assembleDebug          # 产物: app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+要求 Android 8.0（API 26）及以上。首次启动需授予麦克风权限。
+
+抓日志（两种方式）：
+
+```bash
+adb logcat -c
+adb logcat -v threadtime -s VoiceClear:V > voiceclear-log.txt   # 实时
+```
+
+或在 App 内点「导出诊断日志」按钮直接保存文件（无需连电脑）。
+
+**日志不含原始音频与完整表达文本**，只含各阶段耗时、置信度、错误码等元信息。
+
+详细测试步骤与边界场景清单见 [APK 真机测试指引](docs/apk-testing-guide.md)。
+
 ## 构建与验证
 
 ```bash
 ./gradlew :app:assembleDebug          # 构建
-./gradlew :app:testDebugUnitTest      # 单元测试（37 项）
+./gradlew :app:testDebugUnitTest      # 单元测试（45 项）
 ./gradlew :app:lintDebug              # 静态检查
+python3 tools/test_tools.py           # 工具测试（15 项）
 ```
 
 三道验证门槛：
@@ -70,7 +93,7 @@ app/src/main/java/com/voiceclear/app/
 |---|---|
 | Gate 1 静态检查 | 通过，**0 个 Error** |
 | Gate 2 完整构建 | 通过，debug/release APK 均产出 |
-| Gate 3 运行验证 | 37 项测试全部通过（Robolectric 框架级）；**真机验证待补** |
+| Gate 3 运行验证 | 45 项测试全部通过（Robolectric 框架级）；**真机验证进行中** |
 
 > Gate 3 说明：本仓库在无 KVM 的 aarch64 环境中开发，模拟器不可用，故用
 > Robolectric（真实 Android 框架语义）验证。音频路由、来电中断、蓝牙断连、
@@ -80,7 +103,7 @@ app/src/main/java/com/voiceclear/app/
 
 - **无真实识别质量结论**：识别使用假引擎。真实中文 ASR 的接入需先解决模型分发方式、
   许可证核查，以及在目标人群上与通用 ASR 的对照。
-- **未做真机验证**：见上。
+- **未做真机验证**：首代 APK 已交付待测，见 [测试指引](docs/apk-testing-guide.md)。
 - **尚无目标用户数据**：数据采集协议已就绪，但伦理与合规审查未完成，
   因此协议明确标注「不得据此实际采集」。
 - **开源项目引用需谨慎**：原始需求提到的 VoiceRestore / SIDON 经核实均为

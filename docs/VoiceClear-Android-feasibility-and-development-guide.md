@@ -649,10 +649,13 @@ CER = (替换字数 S + 删除字数 D + 插入字数 I) / 参考总字数 N
 | 6.5 采集 UI | `capture/CaptureActivity.kt` + `res/layout/activity_capture.xml` | 已实现：提示句选择、录音、意图确认、导出、清空 |
 | 8 评测流水线 | `tools/import_session.py` | 已实现：App 导出 → 标准数据集 → 自动校验 |
 | 7 知情同意 | `docs/consent-and-notice-draft.md` | 已产出草稿（须经法务/伦理审查后方可使用） |
+| 7 音频导出授权 | `capture/AudioExportActivity.kt` | 已实现：显式二次确认 + 系统文件选择器，不需存储权限 |
+| 9.1 诊断日志 | `session/DiagnosticLog.kt` | 已实现：logcat + App 内导出，不含音频与完整文本 |
+| 6.5 真机测试 | `docs/apk-testing-guide.md` | 已产出安装、抓日志与边界场景清单 |
 
 **尚未实现（按阶段推进）**：真实中文 ASR 模型接入（当前识别仍为假引擎）、模型包版本管理与回滚、
 录音焦点管理、指标持久化与授权上传、voice profile、
-采集 App 的音频导出授权流程（当前导出仅含元数据，音频需另行拷贝）。
+模型包下载与增量更新策略（当前随包分发）。
 
 ### 13.1 识别引擎接入现状与阻塞（诚实边界）
 

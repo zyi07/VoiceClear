@@ -33,6 +33,12 @@
             android:name=".capture.CaptureActivity"
             android:exported="false"
             android:label="@string/capture_title" />
+
+        <!-- 音频导出：需用户显式确认，走系统文件选择器 -->
+        <activity
+            android:name=".capture.AudioExportActivity"
+            android:exported="false"
+            android:label="@string/export_audio_title" />
     </application>
 
 </manifest>

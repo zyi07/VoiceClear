@@ -15,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.voiceclear.app.R
 import com.voiceclear.app.engine.AudioCapture
+import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.engine.AudioSegment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -88,6 +89,9 @@ class CaptureActivity : ComponentActivity() {
         }
         findViewById<MaterialButton>(R.id.captureExportButton).setOnClickListener {
             onExportClicked()
+        }
+        findViewById<MaterialButton>(R.id.captureAudioExportButton).setOnClickListener {
+            startActivity(android.content.Intent(this, AudioExportActivity::class.java))
         }
         findViewById<MaterialButton>(R.id.captureClearButton).setOnClickListener {
             onClearClicked()
@@ -199,10 +203,16 @@ class CaptureActivity : ComponentActivity() {
 
             when (result) {
                 is AudioCapture.CaptureResult.Failure -> {
+                    DiagnosticLog.e("Capture", "采集失败, code=" + result.code)
                     statusText.setText(R.string.capture_permission_needed)
                 }
 
                 is AudioCapture.CaptureResult.Success -> {
+                    DiagnosticLog.i(
+                        "Capture",
+                        "采集成功, 时长=" + result.segment.durationMs + "ms, 采样率=" +
+                            result.segment.sampleRate + ", 质量标记=" + result.segment.qualityFlags,
+                    )
                     onCaptured(result.segment)
                 }
             }
@@ -222,8 +232,12 @@ class CaptureActivity : ComponentActivity() {
             consentFlags = ConsentFlags.ALL,
         )
 
-        val audioName = saved.segmentId + ".pcm"
         store.saveAudio(controller.sessionId, saved.segmentId, segment.samples)
+        DiagnosticLog.i(
+            "Capture",
+            "片段已入库, id=" + saved.segmentId + ", 场景=" + saved.scene.value +
+                ", 参考来源=" + saved.referenceSource.value,
+        )
 
         if (controller.hasPendingIntent()) {
             statusText.setText(R.string.capture_status_intent_needed)
@@ -332,6 +346,7 @@ class CaptureActivity : ComponentActivity() {
             ),
         )
         store.exportMetadata()
+        DiagnosticLog.i("Capture", "数据集已导出, 片段数=" + stats.segments)
         AlertDialog.Builder(this)
             .setTitle(R.string.capture_export_title)
             .setMessage(R.string.capture_export_message)

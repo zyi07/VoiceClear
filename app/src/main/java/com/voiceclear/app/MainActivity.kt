@@ -1,6 +1,7 @@
 package com.voiceclear.app
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
@@ -23,6 +24,7 @@ import com.voiceclear.app.engine.RecognitionResult
 import com.voiceclear.app.engine.RecognitionRequest
 import com.voiceclear.app.engine.SynthesisEngine
 import com.voiceclear.app.engine.SynthesisRequest
+import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.MetricsCollector
 import com.voiceclear.app.session.ProcessingStage
 import com.voiceclear.app.session.SessionController
@@ -77,6 +79,34 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    /**
+     * 诊断日志导出：使用系统文件选择器（SAF），用户自行选择保存位置，
+     * 因此不需要任何存储权限。
+     */
+    private val exportLogLauncher =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri == null) {
+                DiagnosticLog.i("Log", "用户取消了日志导出")
+                return@registerForActivityResult
+            }
+            val saved = runCatching {
+                contentResolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(DiagnosticLog.export().toByteArray(Charsets.UTF_8))
+                } ?: error("无法打开输出流")
+            }
+            if (saved.isSuccess) {
+                DiagnosticLog.i("Log", "诊断日志已导出")
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.export_log_title)
+                    .setMessage(R.string.export_log_saved)
+                    .setPositiveButton(R.string.capture_confirm, null)
+                    .show()
+            } else {
+                DiagnosticLog.e("Log", "日志导出失败: " + (saved.exceptionOrNull()?.message ?: "未知错误"))
+                showError(getString(R.string.export_log_failed))
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -111,6 +141,10 @@ class MainActivity : ComponentActivity() {
         recordButton.setOnClickListener { onRecordClicked() }
         findViewById<MaterialButton>(R.id.captureModeButton).setOnClickListener {
             startActivity(android.content.Intent(this, CaptureActivity::class.java))
+        }
+        findViewById<MaterialButton>(R.id.exportLogButton).setOnClickListener {
+            DiagnosticLog.i("Log", "请求导出诊断日志, 当前条数=" + DiagnosticLog.size())
+            exportLogLauncher.launch("voiceclear-log-" + System.currentTimeMillis() + ".txt")
         }
         confirmButton.setOnClickListener { onConfirmClicked() }
         originalButton.setOnClickListener { onPlayOriginalClicked() }
@@ -156,6 +190,10 @@ class MainActivity : ComponentActivity() {
         recognizedText.setText("")
         sessionStartAt = System.currentTimeMillis()
         stageStart.clear()
+        DiagnosticLog.i(
+            "Session",
+            "会话开始, id=" + (sessionController.sessionId ?: "none").take(8),
+        )
         renderState(SessionState.RECORDING)
     }
 
@@ -178,11 +216,21 @@ class MainActivity : ComponentActivity() {
 
             when (result) {
                 is AudioCapture.CaptureResult.Failure -> {
+                    DiagnosticLog.e(
+                        "Capture",
+                        "采集失败, 耗时=" + stageStart["capture"] + "ms, code=" + result.code,
+                    )
                     sessionController.fail(ProcessingStage.CAPTURE, result.code)
                     showError(getString(R.string.error_capture_failed))
                 }
 
                 is AudioCapture.CaptureResult.Success -> {
+                    DiagnosticLog.i(
+                        "Capture",
+                        "采集完成, 耗时=" + stageStart["capture"] + "ms, 时长=" +
+                            result.segment.durationMs + "ms, 采样率=" + result.segment.sampleRate +
+                            ", 质量标记=" + result.segment.qualityFlags,
+                    )
                     val segment = result.segment
                     lastCapturedSegment = segment
                     if (segment.qualityFlags.contains(AudioCapture.FLAG_EMPTY_CAPTURE)) {
@@ -199,6 +247,12 @@ class MainActivity : ComponentActivity() {
                         ),
                     )
                     val recognitionMs = System.currentTimeMillis() - recognitionStart
+                    DiagnosticLog.i(
+                        "Recognition",
+                        "识别完成, 耗时=" + recognitionMs + "ms, 置信度=" +
+                            (recognition.confidence?.toString() ?: "unknown") +
+                            ", 文本长度=" + recognition.normalizedText.length,
+                    )
                     if (!sessionController.isCurrent(sessionId)) return@launch
                     stageStart["recognition"] = recognitionMs
                     lastRecognition = recognition
@@ -231,6 +285,10 @@ class MainActivity : ComponentActivity() {
                 ),
             )
             val synthesisMs = System.currentTimeMillis() - synthesisStart
+            DiagnosticLog.i(
+                "Synthesis",
+                "合成完成, 耗时=" + synthesisMs + "ms, 警告=" + result.warnings.joinToString(),
+            )
             if (!sessionController.isCurrent(sessionId)) return@launch
             stageStart["synthesis"] = synthesisMs
 
@@ -271,6 +329,7 @@ class MainActivity : ComponentActivity() {
             }
 
             stageStart["playback"] = System.currentTimeMillis() - playbackStart
+            DiagnosticLog.i("Playback", "播放结束, 耗时=" + stageStart["playback"] + "ms")
             audioFocusManager.abandonFocus()
             if (sessionController.isCurrent(sessionId)) {
                 sessionController.onPlaybackFinished()
@@ -383,24 +442,30 @@ class MainActivity : ComponentActivity() {
         val recognitionMs = stageStart["recognition"] ?: 0L
         val synthesisMs = stageStart["synthesis"] ?: 0L
         val totalMs = if (sessionStartAt > 0) System.currentTimeMillis() - sessionStartAt else 0L
-        metricsCollector.record(
-            SessionMetrics(
-                sessionId = sessionId,
-                captureMs = stageStart["capture"] ?: 0L,
-                recognitionMs = recognitionMs,
-                synthesisMs = synthesisMs,
-                playbackMs = stageStart["playback"] ?: 0L,
-                totalMs = totalMs,
-                outcome = metricsCollector.deriveOutcome(confidence, failed, cancelled),
-                modelVersion = ENGINE_VERSION + "+" + recognitionEngine.engineId,
-                qualityFlags = lastCapturedSegment?.qualityFlags ?: emptyList(),
-            ),
+        val metrics = SessionMetrics(
+            sessionId = sessionId,
+            captureMs = stageStart["capture"] ?: 0L,
+            recognitionMs = recognitionMs,
+            synthesisMs = synthesisMs,
+            playbackMs = stageStart["playback"] ?: 0L,
+            totalMs = totalMs,
+            outcome = metricsCollector.deriveOutcome(confidence, failed, cancelled),
+            modelVersion = ENGINE_VERSION + "+" + recognitionEngine.engineId,
+            qualityFlags = lastCapturedSegment?.qualityFlags ?: emptyList(),
+        )
+        metricsCollector.record(metrics)
+        DiagnosticLog.i(
+            "Metrics",
+            "指标记录, outcome=" + metrics.outcome + ", total=" + metrics.totalMs +
+                "ms, capture=" + metrics.captureMs + "ms, recognition=" + metrics.recognitionMs +
+                "ms, synthesis=" + metrics.synthesisMs + "ms",
         )
         stageStart.clear()
         sessionStartAt = 0L
     }
 
     private fun showError(message: String) {
+        DiagnosticLog.e("Error", message)
         warningText.text = message
         warningText.visibility = View.VISIBLE
     }
