@@ -1,0 +1,123 @@
+{
+
+  "version": "v1.0",
+
+  "note": "朗读提示句库。覆盖音位、声调、常用表达、数字与否定、姓名地名等易错类别。",
+
+  "coverage": {
+
+    "tone": "声调对立与易混，如 妈麻马骂",
+
+    "final": "韵尾与前后鼻音，如 干感敢赶 / 因英影 / 元远院",
+
+    "retroflex": "卷舌音，如 知日字次思",
+
+    "dental_alveolar": "平翘舌与舌尖音对照，如 知资次思日字",
+
+    "number": "数字、金额、日期、时刻、剂量",
+
+    "negation": "否定与反问，评测内容保真的高风险类别",
+
+    "proper_noun": "姓名、地名、机构名",
+
+    "medical": "就医场景的高风险词：科室、症状、药名、剂量",
+
+    "daily": "日常表达与生活场景"
+
+  },
+
+  "prompts": [
+
+    { "id": "P0001", "category": "daily", "text": "今天天气不错，我打算出去走走。", "note": "日常叙述" },
+
+    { "id": "P0002", "category": "daily", "text": "请帮我把窗户关上，有点冷。", "note": "日常请求" },
+
+    { "id": "P0003", "category": "daily", "text": "这个多少钱？能不能便宜一点？", "note": "日常交易" },
+
+    { "id": "P0004", "category": "daily", "text": "我饿了，想吃点东西。", "note": "日常表达" },
+
+    { "id": "P0005", "category": "daily", "text": "我们几点出发？", "note": "日常问答" },
+
+    { "id": "P0006", "category": "daily", "text": "请再说一遍，我没听清楚。", "note": "对话修复" },
+
+    { "id": "P0007", "category": "daily", "text": "我不太舒服，需要休息一下。", "note": "健康表达" },
+
+    { "id": "P0008", "category": "daily", "text": "可以给我一杯温水吗？", "note": "日常请求" },
+
+    { "id": "P0009", "category": "tone", "text": "妈妈骂了马。", "note": "声调对立 mā mà mǎ mà" },
+
+    { "id": "P0010", "category": "tone", "text": "大米的米是这个米吗？", "note": "同音字测试" },
+
+    { "id": "P0011", "category": "tone", "text": "他很生气，气死我了。", "note": "同音异调" },
+
+    { "id": "P0012", "category": "tone", "text": "这个价格很公道。", "note": "常见词" },
+
+    { "id": "P0013", "category": "final", "text": "三班同学请举手。", "note": "n/ng 韵尾" },
+
+    { "id": "P0014", "category": "final", "text": "我刚吃完晚饭。", "note": "n 韵尾" },
+
+    { "id": "P0015", "category": "final", "text": "山前面有个花园。", "note": "前后鼻音" },
+
+    { "id": "P0016", "category": "final", "text": "这个问题有点难，需要想一想。", "note": "长句" },
+
+    { "id": "P0017", "category": "retroflex", "text": "这是一件好事。", "note": "卷舌音" },
+
+    { "id": "P0018", "category": "retroflex", "text": "四个四十四，四十四十四。", "note": "经典绕口" },
+
+    { "id": "P0019", "category": "dental_alveolar", "text": "资(zhī)资(zì)知(zhī)子(zǐ)", "note": "平翘舌对立" },
+
+    { "id": "P0020", "category": "dental_alveolar", "text": "紫色丝线，四十四只石狮。", "note": "平翘舌密集" },
+
+    { "id": "P0021", "category": "number", "text": "我明天上午十点去医院。", "note": "时刻" },
+
+    { "id": "P0022", "category": "number", "text": "这个药一天吃三次，每次两片。", "note": "剂量，高风险" },
+
+    { "id": "P0023", "category": "number", "text": "一共三百五十块六毛。", "note": "金额" },
+
+    { "id": "P0024", "category": "number", "text": "我的手机号是 138 一二三四五六七八。", "note": "号码" },
+
+    { "id": "P0025", "category": "number", "text": "星期三下午两点半，在三楼会议室。", "note": "时间地点" },
+
+    { "id": "P0026", "category": "negation", "text": "我不去，请不要给我打电话。", "note": "双重否定" },
+
+    { "id": "P0027", "category": "negation", "text": "不用麻烦，我自己可以的。", "note": "婉拒" },
+
+    { "id": "P0028", "category": "negation", "text": "这个不是我要的，请换一个。", "note": "否定 + 纠正" },
+
+    { "id": "P0029", "category": "negation", "text": "我没有吃饭。", "note": "否定高频" },
+
+    { "id": "P0030", "category": "negation", "text": "千万别告诉别人。", "note": "否定强调" },
+
+    { "id": "P0031", "category": "proper_noun", "text": "我叫张伟，今年三十二岁。", "note": "姓名年龄" },
+
+    { "id": "P0032", "category": "proper_noun", "text": "请帮我联系李娜，她的电话是 139零零零零零零。", "note": "姓名号码" },
+
+    { "id": "P0033", "category": "proper_noun", "text": "我要去北京市朝阳区人民医院。", "note": "地名机构" },
+
+    { "id": "P0034", "category": "proper_noun", "text": "这里是上海火车站。", "note": "地名" },
+
+    { "id": "P0035", "category": "medical", "text": "我嗓子疼，说话有点不清楚。", "note": "症状自述" },
+
+    { "id": "P0036", "category": "medical", "text": "医生说是咽炎，让我多吃药。", "note": "医疗陈述" },
+
+    { "id": "P0037", "category": "medical", "text": "我的右耳听力不太好，需要配助听器。", "note": "听障自述" },
+
+    { "id": "P0038", "category": "medical", "text": "请帮我挂一个耳鼻喉科的号。", "note": "就医请求" },
+
+    { "id": "P0039", "category": "medical", "text": "上次开的药吃完了，需要再开一次。", "note": "续方请求" },
+
+    { "id": "P0040", "category": "medical", "text": "复诊是下周三上午，记得带病历。", "note": "复诊安排" },
+
+    { "id": "P0041", "category": "daily", "text": "麻烦你帮我看一下这个表格。", "note": "日常请求" },
+
+    { "id": "P0042", "category": "daily", "text": "我们先说正事，然后聊别的。", "note": "语序测试" },
+
+    { "id": "P0043", "category": "daily", "text": "我觉得这个方案还不错，可以试试。", "note": "长句" },
+
+    { "id": "P0044", "category": "daily", "text": "等一下，我马上就好。", "note": "日常应答" },
+
+    { "id": "P0045", "category": "daily", "text": "这件事以后再说吧。", "note": "日常应答" }
+
+  ]
+
+}
