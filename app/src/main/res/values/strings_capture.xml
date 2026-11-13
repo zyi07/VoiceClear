@@ -50,6 +50,7 @@
     <string name="model_skip">暂不下载</string>
     <string name="model_progress">已下载 %1$s / %2$s</string>
     <string name="model_progress_unknown">已下载 %1$s</string>
+    <string name="model_source">正在从 %1$s 下载…</string>
     <string name="model_loading">模型下载完成，正在加载…</string>
     <string name="model_download_failed">下载失败，请检查网络后重试</string>
     <string name="model_load_failed">模型加载失败，请重启应用重试</string>

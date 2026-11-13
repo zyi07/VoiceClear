@@ -86,10 +86,13 @@ class SenseVoiceEngineTest {
     }
 
     @Test
-    fun archiveUrlPointsToOfficialRelease() {
-        // 下载源必须是官方 Release 归档，避免依赖需要登录的模型托管。
-        assertTrue(ModelDownloadManager.ARCHIVE_URL.startsWith("https://github.com/k2-fsa/"))
-        assertTrue(ModelDownloadManager.ARCHIVE_URL.endsWith(".tar.bz2"))
-        assertTrue(ModelDownloadManager.EXPECTED_MODEL_BYTES > 200_000_000L)
+    fun everyDownloadSourceUsesHttps() {
+        // 所有下载源必须是 https，避免明文传输被中间人替换模型文件。
+        for (source in ModelDownloadManager.SOURCES) {
+            assertTrue(source.modelUrl.startsWith("https://"))
+            if (source.tokensUrl.isNotEmpty()) {
+                assertTrue(source.tokensUrl.startsWith("https://"))
+            }
+        }
     }
 }

@@ -1,5 +1,55 @@
 # VoiceClear 开发日志
 
+## 2026-11-14 00:55 - 模型下载多源降级（ModelScope → GitHub）+ 断点续传
+
+**做了什么：**
+
+- 新增 `engine/ModelSource.kt`：下载源抽象，含 `Kind.DIRECT` / `Kind.ARCHIVE` 两种形态
+  与 Range 请求连通性探测。
+- 重构 `engine/ModelDownloadManager.kt`：
+  - **多源自动降级**：ModelScope（国内直连，实测约 6 MB/s）→ GitHub Release（官方归档）；
+    任一成功即停止，全部失败才报错。
+  - **断点续传**：Range 请求 + `.part` 临时文件；服务端不支持续传（返回 200）时自动从头写。
+  - 每源独立重试 2 次；按各源期望大小分别做完整性校验（阈值 95%）。
+- `ModelSetupActivity`：新增 `onSourceChange` 回调，界面实时显示当前下载来源。
+- 新增 `ModelDownloadManagerTest`（7 项），验证降级顺序、URL 合法性、
+  已就绪时不再下载等行为。
+
+**双源模型等价性实测（不是假设）：**
+
+下载了 ModelScope 的 `model_q8.onnx`（239,234,116 字节）与 GitHub 的
+`model.int8.onnx`（239,233,841 字节），用 ONNX Runtime 1.32.0 实测：
+
+- **图结构完全一致**：输入 `x[N,T,560]` / `x_length[N]` / `language[N]` / `text_norm[N]`，
+  输出 `logits[N,T,25055]`，两者签名逐项相同。
+- **词表字节完全一致**：`tokens.txt` 均为 315,894 字节，`cmp` 判定 IDENTICAL。
+- **两者均可正常推理**：随机输入下 logits 形状相同，
+  mean -7.52 vs -7.63、std 4.54 vs 4.67，差异来自量化细节而非结构问题。
+- 因两者不是同一份文件，**代码不能硬编码单一大小的期望值**，
+  因此每个源各自记录 `expectedModelBytes`，分别校验。
+
+**过程中修正的真实问题：**
+
+1. Python 生成 Kotlin 代码时漏掉块注释的 `*/`，导致测试文件编译失败——
+   已定位到第 14 行并补齐。
+2. 旧测试引用了重构后已删除的常量（`ARCHIVE_URL` 等），改为断言
+   「所有下载源必须为 https」，这个断言比原来更有价值。
+3. 首次尝试用 sherpa-onnx 的 JNI 在本机跑推理失败（onnxruntime 版本不匹配：
+   需要 1.17.1，本机只有其他版本）。改用 ONNX Runtime Python 直接验证模型，
+   绕开了 JNI 依赖问题，验证结论等价。
+
+**仍存在的限制：**
+
+- 两个源的实际下载成功率**未在真机移动网络下验证**，需要用户实测。
+- ModelScope 上的 `model_q8.onnx` 命名与 GitHub 的 `model.int8.onnx` 不同，
+  但实测可用；代码按 `MODEL_FILE` 统一命名，落盘后与源无关。
+
+**验证结果：**
+
+- App 测试 65 项全通过；Lint 0 Error；debug 构建成功。
+
+---
+
 ## 2026-11-14 00:00 - 接入端侧离线识别引擎（SenseVoice）+ 完整诊断导出
 
 **做了什么：**

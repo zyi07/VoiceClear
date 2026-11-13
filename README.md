@@ -60,7 +60,11 @@ app/src/main/java/com/voiceclear/app/
 
 - **引擎**：sherpa-onnx + SenseVoice Small（int8 量化，约 239 MB）
 - **许可**：sherpa-onnx 为 Apache-2.0；模型来自 ModelScope FunASR
-- **模型获取**：首次启动时从 GitHub Release 按需下载到应用私有目录，不打进 APK
+- **模型获取**：首次启动时按需下载到应用私有目录，不打进 APK
+  - **多源自动降级**：ModelScope（魔搭，国内直连）→ GitHub Release（官方）
+  - 支持断点续传（Range 请求），移动网络中断后可接着传
+  - 两源模型是同一 SenseVoice 的不同量化导出，已实测图结构、输入输出签名、
+    词表（tokens.txt 字节完全一致）均相同，仅权重数值有细微差异
 - **完全离线**：推理全在设备上完成，不上传任何音频
 
 ```

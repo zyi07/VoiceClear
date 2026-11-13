@@ -652,7 +652,8 @@ CER = (替换字数 S + 删除字数 D + 插入字数 I) / 参考总字数 N
 | 7 音频导出授权 | `capture/AudioExportActivity.kt` | 已实现：显式二次确认 + 系统文件选择器，不需存储权限 |
 | 9.1 诊断日志 | `session/DiagnosticLog.kt` | 已实现：logcat + App 内导出，不含音频与完整文本 |
 | 4.1 端侧识别 | `engine/SenseVoiceRecognitionEngine.kt` | 已实现：sherpa-onnx + SenseVoice int8，239 MB 运行时下载 |
-| 4.2 模型分发 | `engine/ModelDownloadManager.kt` | 已实现：GitHub Release 下载 + 解压 + 完整性校验 |
+| 4.2 模型分发 | `engine/ModelDownloadManager.kt` | 已实现：多源降级（ModelScope → GitHub）+ 断点续传 + 完整性校验 |
+| 4.3 下载源定义 | `engine/ModelSource.kt` | 已实现：源抽象 + Range 探测 + DIRECT/ARCHIVE 两种形态 |
 | 9.2 崩溃捕获 | `session/CrashHandler.kt` | 已实现：未捕获异常堆栈持久化，闪退可追溯 |
 | 9.3 一键导出 | `session/DiagnosticExporter.kt` | 已实现：日志+崩溃+快照+指标打包 zip |
 | 6.5 真机测试 | `docs/apk-testing-guide.md` | 已产出安装、抓日志与边界场景清单 |

@@ -82,25 +82,32 @@ class ModelSetupActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             val ok = withContext(Dispatchers.IO) {
-                downloadManager.download { downloaded, total ->
-                    runOnUiThread {
-                        if (total > 0) {
-                            progressBar.max = 100
-                            progressBar.progress = ((downloaded * 100) / total).toInt()
-                            detailText.text = getString(
-                                R.string.model_progress,
-                                formatSize(downloaded),
-                                formatSize(total),
-                            )
-                        } else {
-                            progressBar.isIndeterminate = true
-                            detailText.text = getString(
-                                R.string.model_progress_unknown,
-                                formatSize(downloaded),
-                            )
+                downloadManager.download(
+                    onProgress = { downloaded, total ->
+                        runOnUiThread {
+                            if (total > 0) {
+                                progressBar.max = 100
+                                progressBar.progress = ((downloaded * 100) / total).toInt()
+                                detailText.text = getString(
+                                    R.string.model_progress,
+                                    formatSize(downloaded),
+                                    formatSize(total),
+                                )
+                            } else {
+                                progressBar.isIndeterminate = true
+                                detailText.text = getString(
+                                    R.string.model_progress_unknown,
+                                    formatSize(downloaded),
+                                )
+                            }
                         }
-                    }
-                }
+                    },
+                    onSourceChange = { sourceName ->
+                        runOnUiThread {
+                            detailText.text = getString(R.string.model_source, sourceName)
+                        }
+                    },
+                )
             }
 
             if (ok) {
