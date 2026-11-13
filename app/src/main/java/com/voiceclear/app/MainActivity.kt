@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.voiceclear.app.capture.CaptureActivity
 import com.voiceclear.app.engine.AndroidTtsEngine
 import com.voiceclear.app.engine.AudioCapture
 import com.voiceclear.app.engine.AudioFocusManager
@@ -108,6 +109,9 @@ class MainActivity : ComponentActivity() {
         confidenceText = findViewById(R.id.confidenceText)
 
         recordButton.setOnClickListener { onRecordClicked() }
+        findViewById<MaterialButton>(R.id.captureModeButton).setOnClickListener {
+            startActivity(android.content.Intent(this, CaptureActivity::class.java))
+        }
         confirmButton.setOnClickListener { onConfirmClicked() }
         originalButton.setOnClickListener { onPlayOriginalClicked() }
         cancelButton.setOnClickListener { onCancelClicked() }

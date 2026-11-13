@@ -24,6 +24,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            采集模式入口：仅用于经伦理审查批准的研究采集。
+            导出仅含元数据，音频需单独授权。
+        -->
+        <activity
+            android:name=".capture.CaptureActivity"
+            android:exported="false"
+            android:label="@string/capture_title" />
     </application>
 
 </manifest>

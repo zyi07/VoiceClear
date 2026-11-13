@@ -1,5 +1,34 @@
 # VoiceClear 开发日志
 
+## 2026-11-13 22:55 - 采集模式 App、入库流水线与知情同意草稿
+
+**做了什么：**
+
+- 实现采集模式（`capture/` 包，5 个文件）：数据模型、JSON 序列化、本地存储与导出、
+  采集会话控制（意图确认状态机）、采集界面。
+- 提示句库（45 条 / 9 类易错）打包进 `assets/prompts/prompts.json`，随 App 分发保证离线可用与可复现。
+- 采集流程：选择提示句 → 录音 → 质量检查 → 自发表达需确认意图 → 入库；
+  未确认意图的片段标记 `unconfirmed`，**不计入内容正确率统计**。
+- 新增 `tools/import_session.py`：App 导出 → 标准数据集 → 自动校验，附来源溯源记录。
+- 新增 `docs/consent-and-notice-draft.md`：知情同意书、分项授权勾选表、现场口头说明稿，
+  含**撤回的技术边界**说明（已训练全局模型无法精确移除个人特征）。
+- 主界面新增采集模式入口；清单注册 CaptureActivity（非导出）。
+
+**测试与验证：**
+
+- 新增 `CaptureJsonTest`（6 项）与 `CaptureExportCompatibilityTest`（2 项），
+  其中包含**端到端兼容性验证**：App 导出的数据集真实调用 `tools/validate_dataset.py` 并要求通过。
+- App 测试 45 项全通过；工具测试 15 项全通过；Lint 0 Error；debug/release 构建成功。
+
+**过程中修正的真实问题：**
+
+1. **Android 单元测试中 `org.json` 是空实现**——`JSONObject.put` 不抛异常但也不写入数据。
+   通过探针测试确认后，将相关测试改用 Robolectric（提供真实实现），避免写出"永远通过"的假测试。
+2. 采集会话的 `sessionId` 未公开、`selectPrompt` 不接受 null（自发表达模式）——均已修正。
+3. `CaptureStore` 中一处 `forEach` 缺少闭合括号导致整文件解析失败，连带掩盖了其他真实错误。
+
+---
+
 ## 2026-11-13 21:15 - 识别引擎能力契约与端侧离线接入层
 
 **做了什么：**

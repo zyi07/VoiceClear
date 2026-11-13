@@ -644,9 +644,15 @@ CER = (替换字数 S + 删除字数 D + 插入字数 I) / 参考总字数 N
 | 7 隐私默认策略 | `AndroidManifest.xml` + `res/xml/backup_rules.xml` + `data_extraction_rules.xml` | 已实现：备份与设备迁移默认全部排除 |
 | 5.3/8 评测 | `app/src/test/` 六个测试类 | 已实现 37 项，含 Robolectric 框架级验证 |
 | 2.1 目标人群 | `docs/target-cohort-data-collection-protocol.md` | 已产出采集协议与分层设计（待伦理/合规审查） |
+| 4.2 采集模式 | `capture/CaptureModels.kt` / `CaptureJson.kt` / `CaptureStore.kt` | 已实现：数据模型、JSON 序列化、本地存储与导出 |
+| 5.3 意图基准 | `capture/CaptureSessionController.kt` | 已实现：自发表达必须用户确认，未确认标记 `unconfirmed` |
+| 6.5 采集 UI | `capture/CaptureActivity.kt` + `res/layout/activity_capture.xml` | 已实现：提示句选择、录音、意图确认、导出、清空 |
+| 8 评测流水线 | `tools/import_session.py` | 已实现：App 导出 → 标准数据集 → 自动校验 |
+| 7 知情同意 | `docs/consent-and-notice-draft.md` | 已产出草稿（须经法务/伦理审查后方可使用） |
 
 **尚未实现（按阶段推进）**：真实中文 ASR 模型接入（当前识别仍为假引擎）、模型包版本管理与回滚、
-录音焦点管理、指标持久化与授权上传、目标用户数据采集与评测流水线、voice profile。
+录音焦点管理、指标持久化与授权上传、voice profile、
+采集 App 的音频导出授权流程（当前导出仅含元数据，音频需另行拷贝）。
 
 ### 13.1 识别引擎接入现状与阻塞（诚实边界）
 

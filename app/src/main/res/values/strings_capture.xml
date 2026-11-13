@@ -1,0 +1,28 @@
+<resources>
+    <string name="capture_title">采集模式</string>
+    <string name="capture_notice">用于研究评测的录音采集。所有数据只保存在本机，不联网。开始前请确认已签署知情同意。</string>
+    <string name="capture_choose_prompt">选择朗读提示句</string>
+    <string name="capture_start_record">开始录音</string>
+    <string name="capture_spontaneous">录一段自发表达</string>
+    <string name="capture_export">导出数据集（仅元数据）</string>
+    <string name="capture_clear">清空全部采集数据</string>
+    <string name="capture_status_idle">准备就绪</string>
+    <string name="capture_status_recording">正在录音，请清晰说出上面的句子</string>
+    <string name="capture_status_saved">已保存</string>
+    <string name="capture_status_intent_needed">请确认你刚才想说的是什么（可稍后补）</string>
+    <string name="capture_intent_title">你刚才想说的是？</string>
+    <string name="capture_intent_hint">用一句话写下你刚才真正想表达的意思</string>
+    <string name="capture_intent_confirm">确认</string>
+    <string name="capture_intent_skip">稍后再说</string>
+    <string name="capture_export_title">导出数据集</string>
+    <string name="capture_export_message">已导出元数据到应用私有目录。音频需另行授权后单独拷贝。</string>
+    <string name="capture_clear_title">清空采集数据</string>
+    <string name="capture_clear_message">将删除本机全部采集数据，且无法恢复。确定继续？</string>
+    <string name="capture_confirm">确定</string>
+    <string name="capture_cancel">取消</string>
+    <string name="capture_prompt_pick_title">选择提示句</string>
+    <string name="capture_no_prompts">提示句库为空，请检查 assets/prompts/prompts.json</string>
+    <string name="capture_speaker_default">说话人 %1$s</string>
+    <string name="capture_stats_format">已采集 %1$d 条 / %2$s</string>
+    <string name="capture_permission_needed">需要麦克风权限才能录音</string>
+</resources>
