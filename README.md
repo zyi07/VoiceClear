@@ -56,6 +56,23 @@ app/src/main/java/com/voiceclear/app/
     └── MetricsCollector.kt      #   分阶段耗时与结果状态（本地、不含内容）
 ```
 
+## 端侧识别引擎
+
+- **引擎**：sherpa-onnx + SenseVoice Small（int8 量化，约 239 MB）
+- **许可**：sherpa-onnx 为 Apache-2.0；模型来自 ModelScope FunASR
+- **模型获取**：首次启动时从 GitHub Release 按需下载到应用私有目录，不打进 APK
+- **完全离线**：推理全在设备上完成，不上传任何音频
+
+```
+app/src/main/java/com/voiceclear/app/engine/
+  SenseVoiceRecognitionEngine.kt   # 识别引擎
+  ModelDownloadManager.kt           # 模型下载与解压
+  RecognitionEngineFactory.kt       # 引擎选择（模型未就绪时拒绝伪造）
+```
+
+**已知限制**：SenseVoice 不提供 token 级置信度，因此引擎返回 `confidence = null`，
+上层不得以置信度阈值自动放行内容，内容安全依赖"用户确认文本"这一交互。
+
 ## 安装与真机测试
 
 ```bash
@@ -82,7 +99,7 @@ adb logcat -v threadtime -s VoiceClear:V > voiceclear-log.txt   # 实时
 
 ```bash
 ./gradlew :app:assembleDebug          # 构建
-./gradlew :app:testDebugUnitTest      # 单元测试（45 项）
+./gradlew :app:testDebugUnitTest      # 单元测试（58 项）
 ./gradlew :app:lintDebug              # 静态检查
 python3 tools/test_tools.py           # 工具测试（15 项）
 ```
@@ -93,7 +110,7 @@ python3 tools/test_tools.py           # 工具测试（15 项）
 |---|---|
 | Gate 1 静态检查 | 通过，**0 个 Error** |
 | Gate 2 完整构建 | 通过，debug/release APK 均产出 |
-| Gate 3 运行验证 | 45 项测试全部通过（Robolectric 框架级）；**真机验证进行中** |
+| Gate 3 运行验证 | 58 项测试全部通过（Robolectric 框架级）；**真机验证进行中** |
 
 > Gate 3 说明：本仓库在无 KVM 的 aarch64 环境中开发，模拟器不可用，故用
 > Robolectric（真实 Android 框架语义）验证。音频路由、来电中断、蓝牙断连、
@@ -103,7 +120,10 @@ python3 tools/test_tools.py           # 工具测试（15 项）
 
 - **无真实识别质量结论**：识别使用假引擎。真实中文 ASR 的接入需先解决模型分发方式、
   许可证核查，以及在目标人群上与通用 ASR 的对照。
-- **未做真机验证**：首代 APK 已交付待测，见 [测试指引](docs/apk-testing-guide.md)。
+- **未做真机验证**：APK 已交付待测，见 [测试指引](docs/apk-testing-guide.md)。
+- **识别准确率未在目标人群上实测**：SenseVoice 公开基准 AISHELL-1 CER 7.81%，
+  但那是普通说话人数据。目标人群（听障相关发音不清）的真实准确率**尚无数据**，
+  不能引用通用基准代替。
 - **尚无目标用户数据**：数据采集协议已就绪，但伦理与合规审查未完成，
   因此协议明确标注「不得据此实际采集」。
 - **开源项目引用需谨慎**：原始需求提到的 VoiceRestore / SIDON 经核实均为

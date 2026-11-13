@@ -13,6 +13,36 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // 目标设备为华为/荣耀（ARM64），保留 arm64 与 armv7 以覆盖老机型。
+        // x86/x86_64 仅模拟器需要，去掉可省约 71 MB 包体。
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+            // sherpa-onnx-java-api 的 jar 内含桌面端 native 库（osx/win/linux），
+            // 在 Android 上完全无用且可能引发加载冲突，这里排除掉。
+            excludes += setOf(
+                "native/osx-aarch64/**",
+                "native/osx-x64/**",
+                "native/win-x64/**",
+                "native/linux-aarch64/**",
+                "native/linux-x64/**",
+            )
+        }
+        resources {
+            excludes += setOf(
+                "native/osx-aarch64/**",
+                "native/osx-x64/**",
+                "native/win-x64/**",
+                "native/linux-aarch64/**",
+                "native/linux-x64/**",
+            )
+        }
     }
 
     buildTypes {
@@ -52,6 +82,11 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("com.google.android.material:material:1.12.0")
+
+    // sherpa-onnx 端侧离线识别（Apache-2.0）。
+    // 该 artifact 只提供 Java 绑定，native 库通过 jniLibs/ 随包分发，
+    // 与 app/src/main/jniLibs/arm64-v8a 等目录中的 .so 配套。
+    implementation("com.litongjava:sherpa-onnx-java-api:1.0.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

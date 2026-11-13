@@ -651,9 +651,13 @@ CER = (替换字数 S + 删除字数 D + 插入字数 I) / 参考总字数 N
 | 7 知情同意 | `docs/consent-and-notice-draft.md` | 已产出草稿（须经法务/伦理审查后方可使用） |
 | 7 音频导出授权 | `capture/AudioExportActivity.kt` | 已实现：显式二次确认 + 系统文件选择器，不需存储权限 |
 | 9.1 诊断日志 | `session/DiagnosticLog.kt` | 已实现：logcat + App 内导出，不含音频与完整文本 |
+| 4.1 端侧识别 | `engine/SenseVoiceRecognitionEngine.kt` | 已实现：sherpa-onnx + SenseVoice int8，239 MB 运行时下载 |
+| 4.2 模型分发 | `engine/ModelDownloadManager.kt` | 已实现：GitHub Release 下载 + 解压 + 完整性校验 |
+| 9.2 崩溃捕获 | `session/CrashHandler.kt` | 已实现：未捕获异常堆栈持久化，闪退可追溯 |
+| 9.3 一键导出 | `session/DiagnosticExporter.kt` | 已实现：日志+崩溃+快照+指标打包 zip |
 | 6.5 真机测试 | `docs/apk-testing-guide.md` | 已产出安装、抓日志与边界场景清单 |
 
-**尚未实现（按阶段推进）**：真实中文 ASR 模型接入（当前识别仍为假引擎）、模型包版本管理与回滚、
+**尚未实现（按阶段推进）**：模型包版本管理与回滚、
 录音焦点管理、指标持久化与授权上传、voice profile、
 模型包下载与增量更新策略（当前随包分发）。
 

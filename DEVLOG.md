@@ -1,5 +1,58 @@
 # VoiceClear 开发日志
 
+## 2026-11-14 00:00 - 接入端侧离线识别引擎（SenseVoice）+ 完整诊断导出
+
+**做了什么：**
+
+- **端侧真实识别引擎**：sherpa-onnx + SenseVoice Small int8 量化模型（239 MB）。
+  - `engine/SenseVoiceRecognitionEngine.kt`：封装 OfflineRecognizer，PCM16 → 归一化浮点 →
+    `acceptWaveform` → `decode` → `getResult`。
+  - `engine/ModelDownloadManager.kt`：首次启动从 GitHub Release 下载归档 → `tar` 解压 →
+    完整性校验（模型体积 ≥ 90% 期望值）→ 上提到模型目录根。
+  - `engine/RecognitionEngineFactory.kt`：**模型未就绪时返回 null，不退回假引擎冒充真实识别**。
+  - `ModelSetupActivity`：独立下载引导页，含进度显示与失败重试。
+- **完整诊断系统**：
+  - `session/CrashHandler.kt`：未捕获异常堆栈持久化（最多保留 10 份），闪退可追溯。
+  - `session/DiagnosticSnapshot.kt`：设备/运行时/存储/权限/音频设备快照。
+  - `session/DiagnosticExporter.kt`：**一键导出 zip**，含 app-log.txt、crash.txt、
+    snapshot.txt、metrics.json、README.txt。
+  - `MetricsCollector.exportJson()`：手工拼接 JSON（不用 org.json，单测环境下是空实现）。
+- **构建配置**：
+  - jniLibs 引入 sherpa-onnx Android native 库，ABI 过滤为 arm64-v8a + armeabi-v7a
+    （去掉 x86/x86_64，省约 71 MB）。
+  - packaging 排除 Maven jar 内的桌面端 native 库（osx/win/linux），APK 从 64 MB 降到 59.5 MB。
+
+**过程中修正的真实问题：**
+
+1. **`setModelConfig` 方法不存在**——正确是 `setOfflineModelConfig`。凭记忆写必然出错，
+   已用 javap 实测 sherpa-onnx-java-api 1.0.1 的真实签名后才写对。
+2. **Maven jar 内含桌面端 native 库**（osx-aarch64/osx-x64/win-x64/linux-*），
+   被一并打进 APK 占 13 MB 且在 Android 上无用，已通过 packaging 规则排除。
+3. **`AudioManager.propertyForSamplingRate` 不存在**——正确是
+   `getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)`，已用 javap 核实。
+4. **org.json 在单元测试下是空实现**，`put` 静默失效；`MetricsCollector.exportJson()`
+   改为手工拼接，避免写出永远通过的假测试。
+
+**关键边界（诚实说明）：**
+
+- SenseVoice **不提供 token 级置信度**，引擎返回 `confidence = null`。
+  内容安全必须依赖"用户确认文本"交互，不能用置信度阈值自动放行。
+- SenseVoice 公开基准 AISHELL-1 CER 7.81%（普通说话人），
+  **目标人群（听障相关发音不清）的准确率尚无数据**，不能引用通用基准代替。
+- 模型下载依赖 GitHub Release；huggingface 与 hf-mirror 在本次开发环境返回 401，
+  未验证国内网络环境下的实际下载成功率，需真机验证。
+
+**验证结果：**
+
+- App 测试 58 项全通过；Lint 0 Error；debug 构建成功；APK 59.5 MB。
+
+**待做什么：**
+
+- 真机验证：模型下载成功率、真实识别准确率、端到端延迟、内存与温升。
+- release 签名版仍未产出（安全策略禁止生成/读取密钥材料）。
+
+---
+
 ## 2026-11-13 23:10 - 首代 APK、诊断日志与音频导出授权
 
 **做了什么：**

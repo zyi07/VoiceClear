@@ -39,6 +39,12 @@
             android:name=".capture.AudioExportActivity"
             android:exported="false"
             android:label="@string/export_audio_title" />
+
+        <!-- 模型准备：首次启动时下载端侧识别模型 -->
+        <activity
+            android:name=".ModelSetupActivity"
+            android:exported="false"
+            android:label="@string/model_title" />
     </application>
 
 </manifest>

@@ -68,6 +68,38 @@ class MetricsCollector(private val maxEntries: Int = DEFAULT_MAX_ENTRIES) {
     }
 
     /** 清空本地指标。 */
+    /**
+     * 导出全部指标为 JSON 文本。
+     *
+     * 这里手工拼接而不是用 org.json：单元测试环境下 Android SDK 的 org.json
+     * 是空实现（put 会静默失效），手工拼接可保证在任何环境下行为一致。
+     */
+    fun exportJson(): String {
+        val items = snapshot()
+        val builder = StringBuilder()
+        builder.append("[")
+        items.forEachIndexed { index, metrics ->
+            if (index > 0) builder.append(",")
+            builder.append("{")
+            builder.append("\"sessionId\":\"").append(metrics.sessionId).append("\",")
+            builder.append("\"captureMs\":").append(metrics.captureMs).append(",")
+            builder.append("\"recognitionMs\":").append(metrics.recognitionMs).append(",")
+            builder.append("\"synthesisMs\":").append(metrics.synthesisMs).append(",")
+            builder.append("\"playbackMs\":").append(metrics.playbackMs).append(",")
+            builder.append("\"totalMs\":").append(metrics.totalMs).append(",")
+            builder.append("\"outcome\":\"").append(metrics.outcome).append("\",")
+            builder.append("\"modelVersion\":\"").append(metrics.modelVersion).append("\",")
+            builder.append("\"qualityFlags\":[")
+            metrics.qualityFlags.forEachIndexed { flagIndex, flag ->
+                if (flagIndex > 0) builder.append(",")
+                builder.append("\"").append(flag).append("\"")
+            }
+            builder.append("]}")
+        }
+        builder.append("]")
+        return builder.toString()
+    }
+
     fun clear() {
         synchronized(order) {
             entries.clear()

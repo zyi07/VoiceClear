@@ -19,11 +19,16 @@ import com.voiceclear.app.engine.AudioFocusManager
 import com.voiceclear.app.engine.AudioPlayback
 import com.voiceclear.app.engine.AudioSegment
 import com.voiceclear.app.engine.FakeRecognitionEngine
+import com.voiceclear.app.engine.ModelDownloadManager
+import com.voiceclear.app.engine.RecognitionEngineFactory
+import com.voiceclear.app.engine.SenseVoiceRecognitionEngine
 import com.voiceclear.app.engine.RecognitionEngine
 import com.voiceclear.app.engine.RecognitionResult
 import com.voiceclear.app.engine.RecognitionRequest
 import com.voiceclear.app.engine.SynthesisEngine
 import com.voiceclear.app.engine.SynthesisRequest
+import com.voiceclear.app.session.CrashHandler
+import com.voiceclear.app.session.DiagnosticExporter
 import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.MetricsCollector
 import com.voiceclear.app.session.ProcessingStage
@@ -48,7 +53,14 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioCapture: AudioCapture
     private lateinit var audioPlayback: AudioPlayback
 
-    private val recognitionEngine: RecognitionEngine = FakeRecognitionEngine()
+    /**
+     * 真实识别引擎。模型未下载时为 null，界面会引导用户下载，
+     * **不会退回假引擎**（否则用户会误以为看到的是真实识别结果）。
+     */
+    private var senseVoiceEngine: SenseVoiceRecognitionEngine? = null
+    private lateinit var modelDownloadManager: ModelDownloadManager
+    private val fallbackEngine: RecognitionEngine = FakeRecognitionEngine()
+    private var activeEngine: RecognitionEngine = FakeRecognitionEngine()
     private lateinit var synthesisEngine: SynthesisEngine
     private lateinit var audioFocusManager: AudioFocusManager
     private val metricsCollector = MetricsCollector()
@@ -84,25 +96,31 @@ class MainActivity : ComponentActivity() {
      * 因此不需要任何存储权限。
      */
     private val exportLogLauncher =
-        registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
             if (uri == null) {
-                DiagnosticLog.i("Log", "用户取消了日志导出")
+                DiagnosticLog.i("Log", "用户取消了诊断导出")
                 return@registerForActivityResult
             }
             val saved = runCatching {
+                val bytes = DiagnosticExporter.buildArchive(
+                    context = applicationContext,
+                    metricsProvider = object : DiagnosticExporter.MetricsProvider {
+                        override fun exportMetrics(): String = metricsCollector.exportJson()
+                    },
+                )
                 contentResolver.openOutputStream(uri)?.use { stream ->
-                    stream.write(DiagnosticLog.export().toByteArray(Charsets.UTF_8))
+                    stream.write(bytes)
                 } ?: error("无法打开输出流")
             }
             if (saved.isSuccess) {
-                DiagnosticLog.i("Log", "诊断日志已导出")
+                DiagnosticLog.i("Log", "诊断包已导出")
                 AlertDialog.Builder(this)
                     .setTitle(R.string.export_log_title)
                     .setMessage(R.string.export_log_saved)
                     .setPositiveButton(R.string.capture_confirm, null)
                     .show()
             } else {
-                DiagnosticLog.e("Log", "日志导出失败: " + (saved.exceptionOrNull()?.message ?: "未知错误"))
+                DiagnosticLog.e("Log", "诊断导出失败: " + (saved.exceptionOrNull()?.message ?: "未知错误"))
                 showError(getString(R.string.export_log_failed))
             }
         }
@@ -116,6 +134,9 @@ class MainActivity : ComponentActivity() {
         audioPlayback = AudioPlayback()
         audioFocusManager = AudioFocusManager(applicationContext)
         synthesisEngine = AndroidTtsEngine(applicationContext)
+        modelDownloadManager = ModelDownloadManager(applicationContext)
+        CrashHandler(applicationContext).install()
+        ensureRecognitionEngine()
 
         // 焦点被抢占（来电、其他媒体）时立即停止播放并回到可重试状态。
         audioFocusManager.onFocusLost = {
@@ -146,11 +167,61 @@ class MainActivity : ComponentActivity() {
             DiagnosticLog.i("Log", "请求导出诊断日志, 当前条数=" + DiagnosticLog.size())
             exportLogLauncher.launch("voiceclear-log-" + System.currentTimeMillis() + ".txt")
         }
+        findViewById<MaterialButton>(R.id.modelSetupButton).setOnClickListener {
+            startActivity(android.content.Intent(this, ModelSetupActivity::class.java))
+        }
+        refreshModelStatus()
         confirmButton.setOnClickListener { onConfirmClicked() }
         originalButton.setOnClickListener { onPlayOriginalClicked() }
         cancelButton.setOnClickListener { onCancelClicked() }
 
         renderState(sessionController.state.value)
+    }
+
+    /**
+     * 准备识别引擎。
+     *
+     * 模型未就绪时**不使用假引擎冒充真实识别**：
+     * - 保持 activeEngine 为假引擎，但界面上会明确提示"模型未就绪"，
+     *   并在点击录音时引导用户去下载；
+     * - 这样既不会崩溃，也不会让用户误判结果来源。
+     */
+    private fun ensureRecognitionEngine() {
+        val created = RecognitionEngineFactory.create(applicationContext)
+        if (created == null) {
+            activeEngine = fallbackEngine
+            DiagnosticLog.w("Main", "识别模型未就绪，当前为占位引擎（界面会提示）")
+            return
+        }
+        val loaded = created.engine.load()
+        if (loaded) {
+            senseVoiceEngine = created.engine
+            activeEngine = created.engine
+            DiagnosticLog.i("Main", "识别引擎就绪: " + created.engine.engineId)
+        } else {
+            activeEngine = fallbackEngine
+            DiagnosticLog.e("Main", "识别引擎加载失败")
+        }
+    }
+
+    /** 刷新界面上的模型状态提示。 */
+    private fun refreshModelStatus() {
+        val statusView = findViewById<TextView>(R.id.modelStatusText)
+        val setupButton = findViewById<MaterialButton>(R.id.modelSetupButton)
+        if (senseVoiceEngine != null) {
+            statusView.text = getString(
+                R.string.model_status_ready,
+                String.format(
+                    java.util.Locale.CHINA,
+                    "%.1f MB",
+                    modelDownloadManager.diskUsage() / 1024.0 / 1024.0,
+                ),
+            )
+            setupButton.visibility = View.GONE
+        } else {
+            statusView.setText(R.string.model_status_missing)
+            setupButton.visibility = View.VISIBLE
+        }
     }
 
     private fun onRecordClicked() {
@@ -167,6 +238,13 @@ class MainActivity : ComponentActivity() {
         }
         if (!hasRecordPermission()) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        if (senseVoiceEngine == null) {
+            // 模型未就绪时不启动录音，避免产出无法识别的无效音频。
+            DiagnosticLog.w("Main", "模型未就绪，阻止录音")
+            showError(getString(R.string.engine_not_ready_warning))
+            startActivity(android.content.Intent(this, ModelSetupActivity::class.java))
             return
         }
         startRecording()
@@ -239,7 +317,7 @@ class MainActivity : ComponentActivity() {
                         return@launch
                     }
                     val recognitionStart = System.currentTimeMillis()
-                    val recognition = recognitionEngine.recognize(
+                    val recognition = activeEngine.recognize(
                         RecognitionRequest(
                             sessionId = sessionId,
                             audio = segment,
@@ -450,7 +528,7 @@ class MainActivity : ComponentActivity() {
             playbackMs = stageStart["playback"] ?: 0L,
             totalMs = totalMs,
             outcome = metricsCollector.deriveOutcome(confidence, failed, cancelled),
-            modelVersion = ENGINE_VERSION + "+" + recognitionEngine.engineId,
+            modelVersion = ENGINE_VERSION + "+" + activeEngine.engineId,
             qualityFlags = lastCapturedSegment?.qualityFlags ?: emptyList(),
         )
         metricsCollector.record(metrics)
@@ -468,6 +546,16 @@ class MainActivity : ComponentActivity() {
         DiagnosticLog.e("Error", message)
         warningText.text = message
         warningText.visibility = View.VISIBLE
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::modelDownloadManager.isInitialized) {
+            if (senseVoiceEngine == null) {
+                ensureRecognitionEngine()
+            }
+            refreshModelStatus()
+        }
     }
 
     override fun onDestroy() {

@@ -25,9 +25,9 @@
     <string name="capture_speaker_default">说话人 %1$s</string>
     <string name="capture_stats_format">已采集 %1$d 条 / %2$s</string>
     <string name="capture_permission_needed">需要麦克风权限才能录音</string>
-    <string name="export_log">导出诊断日志</string>
-    <string name="export_log_title">诊断日志</string>
-    <string name="export_log_saved">日志已保存到下载目录 VoiceClear 目录下</string>
+    <string name="export_log">导出全部诊断信息</string>
+    <string name="export_log_title">诊断包已导出</string>
+    <string name="export_log_saved">已保存完整诊断包（日志 / 崩溃记录 / 设备快照 / 性能指标）</string>
     <string name="export_log_failed">日志导出失败</string>
     <string name="export_audio_title">导出音频</string>
     <string name="export_audio_notice">音频是生物特征信息，导出前请确认已获得数据使用方的明确授权。导出内容为未经降噪的原始录音。</string>
@@ -40,5 +40,23 @@
     <string name="export_audio_confirm">选择位置并导出</string>
     <string name="export_audio_done">导出完成：%1$d 个文件，约 %2$d KB</string>
     <string name="export_audio_failed">导出失败</string>
+    <string name="model_title">准备离线识别模型</string>
+    <string name="model_not_ready">尚未下载识别模型</string>
+    <string name="model_detail_not_ready">本应用使用端侧离线模型识别中文，完全不联网。模型约 239 MB，下载一次即可长期使用。下载过程中请保持网络连接。</string>
+    <string name="model_ready">模型已就绪</string>
+    <string name="model_detail_ready">模型占用 %1$s</string>
+    <string name="model_downloading">正在下载模型…</string>
+    <string name="model_download">下载识别模型（约 239 MB）</string>
+    <string name="model_skip">暂不下载</string>
+    <string name="model_progress">已下载 %1$s / %2$s</string>
+    <string name="model_progress_unknown">已下载 %1$s</string>
+    <string name="model_loading">模型下载完成，正在加载…</string>
+    <string name="model_download_failed">下载失败，请检查网络后重试</string>
+    <string name="model_load_failed">模型加载失败，请重启应用重试</string>
+    <string name="engine_not_ready_warning">识别模型尚未就绪，当前无法识别语音。请在主界面下载模型后重试。</string>
+    <string name="model_download_short">下载识别模型</string>
+    <string name="model_status_ready">离线识别模型已就绪（%1$s）</string>
+    <string name="model_status_missing">离线识别模型未就绪，当前无法识别语音</string>
+
 
 </resources>
