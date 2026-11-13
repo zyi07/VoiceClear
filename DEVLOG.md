@@ -1,5 +1,42 @@
 # VoiceClear 开发日志
 
+## 2026-11-13 21:00 - P2 工程基线：原生 TTS、音频焦点、指标采集与目标人群协议
+
+**做了什么：**
+
+- 按已确认的首批人群（听障相关发音不清的普通话成人）推进工程基线。
+- 实现 `engine/AndroidTtsEngine.kt`：基于 Android 原生 TextToSpeech 的普通话合成，
+  作为"通用声音基线"（不保留用户音色，符合 5.4 节先建基线再个性化的次序）。
+  API 均由本地 SDK javap 实测核对：TextToSpeech(Context, OnInitListener)、setLanguage(Locale)、
+  setSpeechRate/setPitch、speak(CharSequence,int,Bundle,String)、UtteranceProgressListener。
+- 实现 `engine/AudioFocusManager.kt`：播放前申请 AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE，
+  收到焦点丢失立即停止播放，会话结束释放焦点，避免影响用户正常使用设备。
+  AudioFocusRequest 自 API 26 引入，与项目 minSdk 26 一致，无需兼容分支。
+- 实现 `session/MetricsCollector.kt`：分阶段耗时（采集/识别/合成/播放/端到端）、结果状态、
+  低置信度单独标记以便按人群分层分析；只存内存，不含原始音频与完整文本。
+- 接入 MainActivity：真实合成引擎、焦点申请/释放、取消与错误路径的指标记录。
+- 修正焦点申请时机缺陷：初版在播放之后才申请焦点，导致焦点逻辑失效，已改为播放前申请。
+- 修正 TTS 挂死风险：框架模拟下 TextToSpeech 初始化回调不触发导致测试无限挂起，
+  已加入初始化 8 秒与合成 15 秒双重超时保护——这同样保护真机上的引擎无响应场景。
+- 新增 `docs/target-cohort-data-collection-protocol.md`：该人群的采集协议、严重度分层（L1/L2/L3）、
+  场景分层、会话分层、逐条意图基准确认、防泄漏划分、标注质控、隐私生命周期与启动阻塞项。
+- 测试扩至 30 项（新增 MetricsCollectorTest 5 项、AndroidTtsEngineTest 4 项）。
+
+**验证结果：**
+
+- Gate 1：`lintDebug` BUILD SUCCESSFUL，0 个 Error。
+- Gate 2：assembleDebug + assembleRelease 均成功，debug 5.81 MB / release 4.67 MB。
+- Gate 3：30 项测试全部通过（5 个测试类，0 失败 0 错误），含 Robolectric 框架级验证。
+  仍受限于本机 aarch64 无 /dev/kvm，真机验证待补。
+
+**待做什么：**
+
+- 接入真实中文 ASR（当前识别仍为假引擎），先跑通用中文 ASR 在目标人群上的基线。
+- 采集协议需完成伦理与合规审查后才能启动实际采集。
+- 取得真机环境后补做音频路由、来电中断、蓝牙断连、连续会话温升与延迟测量。
+
+---
+
 ## 2026-11-13 20:30 - P1 可测原型搭建与三道门槛验证
 
 **做了什么：**

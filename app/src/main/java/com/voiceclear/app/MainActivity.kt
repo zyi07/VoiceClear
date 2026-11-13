@@ -11,16 +11,20 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
+import com.voiceclear.app.engine.AndroidTtsEngine
 import com.voiceclear.app.engine.AudioCapture
+import com.voiceclear.app.engine.AudioFocusManager
 import com.voiceclear.app.engine.AudioPlayback
 import com.voiceclear.app.engine.AudioSegment
 import com.voiceclear.app.engine.FakeRecognitionEngine
-import com.voiceclear.app.engine.FakeSynthesisEngine
 import com.voiceclear.app.engine.RecognitionResult
-import com.voiceclear.app.engine.SynthesisRequest
 import com.voiceclear.app.engine.RecognitionRequest
+import com.voiceclear.app.engine.SynthesisEngine
+import com.voiceclear.app.engine.SynthesisRequest
+import com.voiceclear.app.session.MetricsCollector
 import com.voiceclear.app.session.ProcessingStage
 import com.voiceclear.app.session.SessionController
+import com.voiceclear.app.session.SessionMetrics
 import com.voiceclear.app.session.SessionState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -41,7 +45,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioPlayback: AudioPlayback
 
     private val recognitionEngine = FakeRecognitionEngine()
-    private val synthesisEngine = FakeSynthesisEngine()
+    private lateinit var synthesisEngine: SynthesisEngine
+    private lateinit var audioFocusManager: AudioFocusManager
+    private val metricsCollector = MetricsCollector()
+
+    /** 计时锚点：记录各阶段耗时，用于端到端延迟测量。 */
+    private val stageStart = mutableMapOf<String, Long>()
+    private var sessionStartAt = 0L
 
     private lateinit var stateText: TextView
     private lateinit var warningText: TextView
@@ -72,6 +82,19 @@ class MainActivity : ComponentActivity() {
         sessionController = SessionController()
         audioCapture = AudioCapture(applicationContext)
         audioPlayback = AudioPlayback()
+        audioFocusManager = AudioFocusManager(applicationContext)
+        synthesisEngine = AndroidTtsEngine(applicationContext)
+
+        // 焦点被抢占（来电、其他媒体）时立即停止播放并回到可重试状态。
+        audioFocusManager.onFocusLost = {
+            runOnUiThread {
+                audioPlayback.stop()
+                if (sessionController.state.value.isBusy) {
+                    sessionController.fail(ProcessingStage.PLAYBACK, AudioFocusManager.ERR_FOCUS_DENIED)
+                    showError(getString(R.string.state_error))
+                }
+            }
+        }
 
         stateText = findViewById(R.id.stateText)
         warningText = findViewById(R.id.warningText)
@@ -117,6 +140,8 @@ class MainActivity : ComponentActivity() {
 
     private fun startRecording() {
         audioPlayback.stop()
+        audioFocusManager.abandonFocus()
+        (synthesisEngine as? AndroidTtsEngine)?.stop()
         lastCapturedSegment = null
         lastRecognition = null
         if (!sessionController.startSession()) {
@@ -124,6 +149,8 @@ class MainActivity : ComponentActivity() {
             return
         }
         recognizedText.setText("")
+        sessionStartAt = System.currentTimeMillis()
+        stageStart.clear()
         renderState(SessionState.RECORDING)
     }
 
@@ -133,6 +160,7 @@ class MainActivity : ComponentActivity() {
         renderState(SessionState.PROCESSING_RECOGNIZING)
 
         lifecycleScope.launch {
+            val captureStart = System.currentTimeMillis()
             val result = withContext(Dispatchers.IO) {
                 if (!hasRecordPermission()) {
                     AudioCapture.CaptureResult.Failure(AudioCapture.ERR_PERMISSION_DENIED)
@@ -141,6 +169,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             recordButton.isEnabled = true
+            stageStart["capture"] = System.currentTimeMillis() - captureStart
 
             when (result) {
                 is AudioCapture.CaptureResult.Failure -> {
@@ -156,6 +185,7 @@ class MainActivity : ComponentActivity() {
                         showError(getString(R.string.no_speech_detected))
                         return@launch
                     }
+                    val recognitionStart = System.currentTimeMillis()
                     val recognition = recognitionEngine.recognize(
                         RecognitionRequest(
                             sessionId = sessionId,
@@ -163,7 +193,9 @@ class MainActivity : ComponentActivity() {
                             engineVersion = ENGINE_VERSION,
                         ),
                     )
+                    val recognitionMs = System.currentTimeMillis() - recognitionStart
                     if (!sessionController.isCurrent(sessionId)) return@launch
+                    stageStart["recognition"] = recognitionMs
                     lastRecognition = recognition
                     sessionController.onRecognitionReady()
                     recognizedText.setText(recognition.normalizedText)
@@ -184,6 +216,7 @@ class MainActivity : ComponentActivity() {
         renderState(SessionState.PROCESSING_SYNTHESIZING)
 
         lifecycleScope.launch {
+            val synthesisStart = System.currentTimeMillis()
             val result = synthesisEngine.synthesize(
                 SynthesisRequest(
                     sessionId = sessionId,
@@ -192,34 +225,87 @@ class MainActivity : ComponentActivity() {
                     engineVersion = ENGINE_VERSION,
                 ),
             )
+            val synthesisMs = System.currentTimeMillis() - synthesisStart
             if (!sessionController.isCurrent(sessionId)) return@launch
-            val audio = result.audio
-            if (audio == null) {
-                sessionController.fail(ProcessingStage.SYNTHESIS, "synthesis_empty_audio")
+            stageStart["synthesis"] = synthesisMs
+
+            // 播放前先申请焦点：原生 TTS 直接发声，没有焦点会让来电等高优先级音频叠加。
+            if (!audioFocusManager.requestFocus()) {
+                sessionController.fail(ProcessingStage.PLAYBACK, AudioFocusManager.ERR_FOCUS_DENIED)
                 showError(getString(R.string.state_error))
+                recordMetrics(
+                    sessionId = sessionId,
+                    failed = true,
+                    cancelled = false,
+                    confidence = lastRecognition?.confidence,
+                )
                 return@launch
             }
+
             sessionController.onSynthesisReady()
             renderState(SessionState.PLAYING)
-            withContext(Dispatchers.IO) { audioPlayback.play(audio) }
+            val playbackStart = System.currentTimeMillis()
+
+            val audio = result.audio
+            if (audio == null) {
+                // 原生 TTS 已在 synthesize() 内完成发声，此处等待引擎回调返回。
+                if (result.warnings.isNotEmpty()) {
+                    sessionController.fail(ProcessingStage.SYNTHESIS, result.warnings.first())
+                    showError(getString(R.string.state_error))
+                    audioFocusManager.abandonFocus()
+                    recordMetrics(
+                        sessionId = sessionId,
+                        failed = true,
+                        cancelled = false,
+                        confidence = lastRecognition?.confidence,
+                    )
+                    return@launch
+                }
+            } else {
+                withContext(Dispatchers.IO) { audioPlayback.play(audio) }
+            }
+
+            stageStart["playback"] = System.currentTimeMillis() - playbackStart
+            audioFocusManager.abandonFocus()
             if (sessionController.isCurrent(sessionId)) {
                 sessionController.onPlaybackFinished()
                 renderState(SessionState.COMPLETED)
             }
+            recordMetrics(
+                sessionId = sessionId,
+                failed = false,
+                cancelled = false,
+                confidence = lastRecognition?.confidence,
+            )
         }
     }
 
     private fun onPlayOriginalClicked() {
         val segment = lastCapturedSegment ?: return
         lifecycleScope.launch {
+            if (!audioFocusManager.requestFocus()) {
+                showError(getString(R.string.state_error))
+                return@launch
+            }
             withContext(Dispatchers.IO) { audioPlayback.play(segment) }
+            audioFocusManager.abandonFocus()
         }
     }
 
     private fun onCancelClicked() {
         audioPlayback.stop()
+        audioFocusManager.abandonFocus()
+        val sessionId = sessionController.sessionId
         sessionController.cancel()
         renderState(SessionState.CANCELLED)
+        if (sessionId != null) {
+            recordMetrics(
+                sessionId = sessionId,
+                failed = false,
+                cancelled = true,
+                confidence = lastRecognition?.confidence,
+            )
+        }
     }
 
     private fun renderRecognition(recognition: RecognitionResult) {
@@ -278,9 +364,46 @@ class MainActivity : ComponentActivity() {
         cancelButton.visibility = if (state.isBusy || showConfirm) View.VISIBLE else View.GONE
     }
 
+    /**
+     * 记录一次会话的本地指标。
+     *
+     * 只保存耗时与结果状态，不包含原始音频和完整文本（技术指导文件 7.1 节）。
+     */
+    private fun recordMetrics(
+        sessionId: String,
+        failed: Boolean,
+        cancelled: Boolean,
+        confidence: Float?,
+    ) {
+        val recognitionMs = stageStart["recognition"] ?: 0L
+        val synthesisMs = stageStart["synthesis"] ?: 0L
+        val totalMs = if (sessionStartAt > 0) System.currentTimeMillis() - sessionStartAt else 0L
+        metricsCollector.record(
+            SessionMetrics(
+                sessionId = sessionId,
+                captureMs = stageStart["capture"] ?: 0L,
+                recognitionMs = recognitionMs,
+                synthesisMs = synthesisMs,
+                playbackMs = stageStart["playback"] ?: 0L,
+                totalMs = totalMs,
+                outcome = metricsCollector.deriveOutcome(confidence, failed, cancelled),
+                modelVersion = ENGINE_VERSION,
+                qualityFlags = lastCapturedSegment?.qualityFlags ?: emptyList(),
+            ),
+        )
+        stageStart.clear()
+        sessionStartAt = 0L
+    }
+
     private fun showError(message: String) {
         warningText.text = message
         warningText.visibility = View.VISIBLE
+    }
+
+    override fun onDestroy() {
+        audioFocusManager.abandonFocus()
+        (synthesisEngine as? AndroidTtsEngine)?.release()
+        super.onDestroy()
     }
 
     companion object {

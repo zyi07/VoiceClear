@@ -623,24 +623,28 @@ CER = (替换字数 S + 删除字数 D + 插入字数 I) / 参考总字数 N
 
 ---
 
-## 13. P1 实现映射（2026-11-13 已落地）
+## 13. 实现映射（2026-11-13 已落地）
 
 下表把本指南的模块划分映射到已实现代码，便于后续按文档评审实现。
 
 | 文档章节 | 实现位置 | 状态 |
 |---|---|---|
-| 4.3 会话状态机 | `app/src/main/java/com/voiceclear/app/session/SessionController.kt` | 已实现，含过期会话拒绝与 21 项测试覆盖 |
+| 4.3 会话状态机 | `session/SessionController.kt` | 已实现，含过期会话拒绝 |
 | 4.2 识别/合成引擎适配 | `engine/SpeechEngines.kt` | 已定义接口与数据契约 |
 | 4.2 可替换假引擎 | `engine/FakeSpeechEngines.kt` | 已实现，用于确定性测试 |
+| 5.4 通用声音基线 | `engine/AndroidTtsEngine.kt` | 已实现：Android 原生 TTS，含初始化与合成双超时保护 |
 | 6.2 音频采集 | `engine/AudioCapture.kt` | 已实现，含权限失败路径 |
 | 6.2 播放控制 | `engine/AudioPlayback.kt` | 已实现 |
+| 6.2 音频焦点 | `engine/AudioFocusManager.kt` | 已实现：播放前申请焦点、抢占即停、会话结束释放 |
+| 6.3 性能测量 | `session/MetricsCollector.kt` | 已实现：分阶段耗时、结果状态、按严重度分层可扩展 |
 | 1.3 首要用户任务 | `MainActivity.kt` | 已实现录音→识别→确认→合成播放→原始回放 |
 | 5.3 内容安全 | `MainActivity.kt` 低置信度提示 + 文本可编辑 | 已实现（阈值待 P0 校准） |
 | 7 隐私默认策略 | `AndroidManifest.xml` + `res/xml/backup_rules.xml` + `data_extraction_rules.xml` | 已实现：备份与设备迁移默认全部排除 |
-| 5.3/8 评测 | `app/src/test/` 三个测试类 | 已实现 21 项，含 Robolectric 框架级验证 |
+| 5.3/8 评测 | `app/src/test/` 五个测试类 | 已实现 30 项，含 Robolectric 框架级验证 |
+| 2.1 目标人群 | `docs/target-cohort-data-collection-protocol.md` | 已产出采集协议与分层设计（待伦理/合规审查） |
 
-**尚未实现（按阶段推进）**：音频焦点与录音焦点管理、模型包版本管理与回滚、指标采集与本地诊断、
-真实 ASR/TTS 接入、目标用户数据采集与评测流水线。
+**尚未实现（按阶段推进）**：真实中文 ASR 接入（当前仍为假引擎）、模型包版本管理与回滚、
+录音焦点管理、指标持久化与授权上传、目标用户数据采集与评测流水线、voice profile。
 
 ---
 
