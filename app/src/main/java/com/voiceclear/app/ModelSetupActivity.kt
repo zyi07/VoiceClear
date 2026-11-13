@@ -73,7 +73,22 @@ class ModelSetupActivity : ComponentActivity() {
         downloadButton.visibility = View.VISIBLE
     }
 
+    /** 网络是否可用。 */
+    private fun isNetworkAvailable(): Boolean {
+        val manager = getSystemService(android.content.Context.CONNECTIVITY_SERVICE)
+            as? android.net.ConnectivityManager ?: return false
+        val network = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     private fun onDownloadClicked() {
+        if (!isNetworkAvailable()) {
+            DiagnosticLog.w("ModelSetup", "网络不可用，提示用户")
+            statusText.setText(R.string.model_no_network)
+            detailText.setText(R.string.model_detail_no_network)
+            return
+        }
         downloadButton.isEnabled = false
         progressBar.visibility = View.VISIBLE
         progressBar.isIndeterminate = false
@@ -131,6 +146,7 @@ class ModelSetupActivity : ComponentActivity() {
             } else {
                 DiagnosticLog.e("ModelSetup", "模型下载失败")
                 statusText.setText(R.string.model_download_failed)
+                detailText.setText(R.string.model_detail_download_failed)
                 progressBar.visibility = View.GONE
                 downloadButton.isEnabled = true
             }

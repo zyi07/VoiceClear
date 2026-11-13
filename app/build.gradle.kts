@@ -45,6 +45,35 @@ android {
         }
     }
 
+    /**
+     * 构建后校验 APK 权限。
+     *
+     * 背景：曾因清单漏声明 INTERNET 权限，导致模型下载在真机上全部失败，
+     * 而报错是 "Permission denied (missing INTERNET permission?)"——不翻诊断日志
+     * 很难定位。这里把它变成构建期硬门禁。
+     */
+    val checkApkPermissions by tasks.registering {
+        dependsOn("assembleDebug")
+        doLast {
+            val apk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
+            if (!apk.exists()) {
+                throw GradleException("找不到 APK: " + apk.absolutePath)
+            }
+            val script = rootProject.file("tools/check_permissions.py")
+            val process = ProcessBuilder(
+                "python3", script.absolutePath, apk.absolutePath,
+            ).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+            logger.lifecycle(output)
+            if (exitCode != 0) {
+                throw GradleException(
+                    "APK 权限校验未通过（退出码 " + exitCode + "），请补齐必需权限后重新构建。",
+                )
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false

@@ -1,5 +1,58 @@
 # VoiceClear 开发日志
 
+## 2026-11-14 01:35 - 修复模型下载必然失败：清单漏声明 INTERNET 权限
+
+**问题现象：**
+
+用户实测（华为 PLA-AL10 / Android 16）报告模型完全无法下载，挂梯子不挂梯子都直接报错。
+
+**定位过程：**
+
+用户提供的诊断包（`voiceclear-log-*.zip`）中 `app-log.txt` 明确记录：
+
+```
+W/ModelDownload: 下载尝试 1 失败: Permission denied (missing INTERNET permission?)
+E/ModelDownload: 归档下载失败: Permission denied (missing INTERNET permission?)
+E/ModelDownload: 所有来源均失败
+```
+
+根因：**AndroidManifest.xml 只声明了 RECORD_AUDIO，没声明 INTERNET**。
+所有网络请求在框架层就被拒绝，请求根本没有发出去——所以挂不挂梯子都一样。
+
+**修复：**
+
+1. `AndroidManifest.xml` 补充 `INTERNET` 与 `ACCESS_NETWORK_STATE` 权限，
+   并加注释说明该权限仅用于一次性下载模型，语音推理完全本地。
+2. `ModelSetupActivity` 增加网络可用性检查：无网络时直接提示，不做无谓的下载尝试。
+3. 下载失败时的界面提示改为引导用户导出诊断信息。
+
+**流程改进（防止同类问题复发）：**
+
+这次故障暴露了一个真实缺陷：**APK 的权限从未在构建期校验过**。
+此前所有功能都是纯本地，漏权限不会有任何症状，直到引入网络下载才暴露。
+
+- 新增 `tools/check_permissions.py`：解析 APK，校验必需权限齐备，
+  缺失则退出码非零。
+- 新增 Gradle 任务 `:app:checkApkPermissions`，作为构建门禁；
+  缺权限时**构建直接失败**。
+- **已验证门禁有效**：临时移除 INTERNET 权限后，构建确实失败并报出
+  「缺少必需权限: android.permission.INTERNET」；恢复后重新通过。
+  没有验证过的门禁等于没有门禁。
+
+**从诊断包读到的设备信息（来自 snapshot.txt）：**
+
+- 机型：HUAWEI PLA-AL10（Mate 30 Pro 系列）
+- Android 16 / SDK 36，ABI arm64-v8a（与内置 native 库匹配）
+- 8 核，堆上限 384 MB
+- 音频输出采样率 48 kHz（应用内部按 16 kHz 采集，不冲突）
+
+**尚未验证：**
+
+- 两个下载源在移动网络下的真实成功率（用户此前从未真正发出过请求）。
+- 239 MB 模型在 384 MB 堆上限设备上的内存占用是否可接受。
+
+---
+
 ## 2026-11-14 00:55 - 模型下载多源降级（ModelScope → GitHub）+ 断点续传
 
 **做了什么：**
