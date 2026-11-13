@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">VoiceClear</string>
+    <string name="app_tagline">言语障碍语音表达助手</string>
+    <string name="btn_start">按住说话</string>
+    <string name="btn_stop">停止</string>
+    <string name="btn_play_original">播放原始语音</string>
+    <string name="btn_confirm">确认并播放</string>
+    <string name="btn_cancel">取消</string>
+    <string name="label_recognized_text">识别文本（可修改）</string>
+    <string name="label_confidence">置信度</string>
+    <string name="confidence_format">%1$s: %2$s</string>
+    <string name="state_idle">准备就绪</string>
+    <string name="state_recording">正在录音…</string>
+    <string name="state_processing">正在处理…</string>
+    <string name="state_awaiting">请确认识别结果</string>
+    <string name="state_playing">正在播放合成语音</string>
+    <string name="state_completed">完成</string>
+    <string name="state_error">处理失败，请重试或播放原始语音</string>
+    <string name="permission_denied">未获得麦克风权限</string>
+    <string name="warning_low_confidence">识别置信度较低，建议确认或修改文本后再播放</string>
+    <string name="error_capture_failed">录音失败</string>
+    <string name="no_speech_detected">未采集到有效语音</string>
+    <string name="confidence_unknown">未知</string>
+    <string name="hint_recognized_text">请确认或修改识别出的文字</string>
+</resources>
