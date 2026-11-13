@@ -1,5 +1,33 @@
 # VoiceClear 开发日志
 
+## 2026-11-13 21:15 - 识别引擎能力契约与端侧离线接入层
+
+**做了什么：**
+
+- 新增 `engine/RecognitionEngine.kt`：识别引擎能力契约，显式声明离线能力、置信度可用性、
+  是否占用麦克风、是否保留音色，使选型、统计与降级逻辑不再依赖隐含假设。
+- 新增 `engine/RecognitionEngineOption.kt`：引擎选型策略（FAKE / SYSTEM / ONNX_OFFLINE / PERSONALIZED），
+  明确 Fake 引擎不可用于评估、只有端侧离线模型适合作为首版候选。
+- 新增 `engine/OnnxOfflineRecognitionEngine.kt`：sherpa-onnx 方案的接入层与能力校验，
+  模型包缺失或无效时返回明确失败码，**不返回任何模拟结果**以免污染评测数据。
+- 联网核实一项关键约束：Android 系统 SpeechRecognizer 会自行占用麦克风（VoiceCommunication 流），
+  与本应用的 AudioCapture 互斥，因此不能作为首版识别方案。
+- 指标中记录引擎 ID（modelVersion 形如 fake-0.1.0+sherpa-onnx-zh），便于按引擎分组统计。
+- 测试增至 37 项（新增 RecognitionEngineOptionTest 7 项）。
+
+**诚实边界：**
+
+当前版本**没有任何真实识别质量结论**——识别链路仍使用假引擎。真实中文 ASR 的接入需要先解决
+模型分发方式、许可证核查与目标人群效果对照三件事。
+
+**验证结果：**
+
+- Gate 1：lintDebug BUILD SUCCESSFUL，0 个 Error。
+- Gate 2：assembleDebug + assembleRelease 均成功。
+- Gate 3：37 项测试全部通过（0 失败 0 错误）。
+
+---
+
 ## 2026-11-13 21:00 - P2 工程基线：原生 TTS、音频焦点、指标采集与目标人群协议
 
 **做了什么：**

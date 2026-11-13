@@ -12,6 +12,10 @@ class FakeRecognitionEngine(
     private val confidence: Float? = 0.82f,
     private val latencyMs: Long = 120,
 ) : RecognitionEngine {
+    override val engineId: String = RecognitionEngineOption.FAKE.engineId
+
+    override val capabilities: EngineCapabilities = RecognitionEngineOption.FAKE.capabilities
+
     override suspend fun recognize(request: RecognitionRequest): RecognitionResult {
         delay(latencyMs)
         return RecognitionResult(

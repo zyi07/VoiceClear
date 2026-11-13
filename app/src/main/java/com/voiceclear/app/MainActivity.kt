@@ -17,6 +17,7 @@ import com.voiceclear.app.engine.AudioFocusManager
 import com.voiceclear.app.engine.AudioPlayback
 import com.voiceclear.app.engine.AudioSegment
 import com.voiceclear.app.engine.FakeRecognitionEngine
+import com.voiceclear.app.engine.RecognitionEngine
 import com.voiceclear.app.engine.RecognitionResult
 import com.voiceclear.app.engine.RecognitionRequest
 import com.voiceclear.app.engine.SynthesisEngine
@@ -44,7 +45,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioCapture: AudioCapture
     private lateinit var audioPlayback: AudioPlayback
 
-    private val recognitionEngine = FakeRecognitionEngine()
+    private val recognitionEngine: RecognitionEngine = FakeRecognitionEngine()
     private lateinit var synthesisEngine: SynthesisEngine
     private lateinit var audioFocusManager: AudioFocusManager
     private val metricsCollector = MetricsCollector()
@@ -387,7 +388,7 @@ class MainActivity : ComponentActivity() {
                 playbackMs = stageStart["playback"] ?: 0L,
                 totalMs = totalMs,
                 outcome = metricsCollector.deriveOutcome(confidence, failed, cancelled),
-                modelVersion = ENGINE_VERSION,
+                modelVersion = ENGINE_VERSION + "+" + recognitionEngine.engineId,
                 qualityFlags = lastCapturedSegment?.qualityFlags ?: emptyList(),
             ),
         )

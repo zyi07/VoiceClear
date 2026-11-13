@@ -633,6 +633,8 @@ CER = (替换字数 S + 删除字数 D + 插入字数 I) / 参考总字数 N
 | 4.2 识别/合成引擎适配 | `engine/SpeechEngines.kt` | 已定义接口与数据契约 |
 | 4.2 可替换假引擎 | `engine/FakeSpeechEngines.kt` | 已实现，用于确定性测试 |
 | 5.4 通用声音基线 | `engine/AndroidTtsEngine.kt` | 已实现：Android 原生 TTS，含初始化与合成双超时保护 |
+| 5.3 引擎能力契约 | `engine/RecognitionEngine.kt` + `RecognitionEngineOption.kt` | 已实现：离线能力、置信度可用性、麦克风占用、音色保持显式声明 |
+| 5.3 端侧离线接入 | `engine/OnnxOfflineRecognitionEngine.kt` | 已实现接入层与能力校验；**真实模型尚未集成**（见下方说明） |
 | 6.2 音频采集 | `engine/AudioCapture.kt` | 已实现，含权限失败路径 |
 | 6.2 播放控制 | `engine/AudioPlayback.kt` | 已实现 |
 | 6.2 音频焦点 | `engine/AudioFocusManager.kt` | 已实现：播放前申请焦点、抢占即停、会话结束释放 |
@@ -640,11 +642,25 @@ CER = (替换字数 S + 删除字数 D + 插入字数 I) / 参考总字数 N
 | 1.3 首要用户任务 | `MainActivity.kt` | 已实现录音→识别→确认→合成播放→原始回放 |
 | 5.3 内容安全 | `MainActivity.kt` 低置信度提示 + 文本可编辑 | 已实现（阈值待 P0 校准） |
 | 7 隐私默认策略 | `AndroidManifest.xml` + `res/xml/backup_rules.xml` + `data_extraction_rules.xml` | 已实现：备份与设备迁移默认全部排除 |
-| 5.3/8 评测 | `app/src/test/` 五个测试类 | 已实现 30 项，含 Robolectric 框架级验证 |
+| 5.3/8 评测 | `app/src/test/` 六个测试类 | 已实现 37 项，含 Robolectric 框架级验证 |
 | 2.1 目标人群 | `docs/target-cohort-data-collection-protocol.md` | 已产出采集协议与分层设计（待伦理/合规审查） |
 
-**尚未实现（按阶段推进）**：真实中文 ASR 接入（当前仍为假引擎）、模型包版本管理与回滚、
+**尚未实现（按阶段推进）**：真实中文 ASR 模型接入（当前识别仍为假引擎）、模型包版本管理与回滚、
 录音焦点管理、指标持久化与授权上传、目标用户数据采集与评测流水线、voice profile。
+
+### 13.1 识别引擎接入现状与阻塞（诚实边界）
+
+已实现**引擎适配与选型层**，但**尚未集成真实中文 ASR 模型**。原因与解除条件如下：
+
+| 事项 | 现状 | 解除条件 |
+|---|---|---|
+| 端侧离线模型（sherpa-onnx 类） | 仅有接入层与能力校验，模型包缺失时返回明确失败码 | 决策模型分发方式（随包 vs 应用内下载）并完成许可证核查 |
+| 模型对目标人群的效果 | 完全未知 | 取得目标人群数据后，与通用 ASR 在同一数据集上对照（5.3 节基线顺序） |
+| 系统 SpeechRecognizer | 已核实**占用麦克风**，与本应用 AudioCapture 互斥 | 不作为首版方案；仅作对照参考 |
+| 本机训练/评测资源 | 无 GPU，磁盘余约 16 GB | 不在本机进行模型训练与大批量评测 |
+
+**因此：当前版本不具备任何真实识别质量结论**，指标中的 `fake-0.1.0+sherpa-onnx-zh` 等标记仅用于区分评测分组，
+不得解读为识别效果。
 
 ---
 

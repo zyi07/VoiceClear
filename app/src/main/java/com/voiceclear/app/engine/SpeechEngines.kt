@@ -6,11 +6,6 @@ package com.voiceclear.app.engine
  * 识别与合成必须通过接口调用，UI 层不直接依赖具体模型，
  * 以便用假引擎做确定性测试，并在后续阶段替换为端侧运行时。
  */
-interface RecognitionEngine {
-    /** 识别一段已采集音频，返回文本候选与可用置信度。 */
-    suspend fun recognize(request: RecognitionRequest): RecognitionResult
-}
-
 interface SynthesisEngine {
     /** 按已确认文本合成语音。 */
     suspend fun synthesize(request: SynthesisRequest): SynthesisResult
