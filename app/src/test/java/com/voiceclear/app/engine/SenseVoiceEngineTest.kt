@@ -26,7 +26,7 @@ class SenseVoiceEngineTest {
 
     @Test
     fun engineDeclaresOfflineAndNoConfidence() {
-        val engine = SenseVoiceRecognitionEngine(context, "/nonexistent")
+        val engine = SenseVoiceRecognitionEngine("/nonexistent")
         assertEquals("sherpa-sensevoice-zh", engine.engineId)
         assertTrue(engine.capabilities.offline)
         assertFalse(engine.capabilities.ownsMicrophone)
@@ -36,14 +36,14 @@ class SenseVoiceEngineTest {
 
     @Test
     fun missingModelReportsNotReady() {
-        val engine = SenseVoiceRecognitionEngine(context, "/nonexistent/model")
+        val engine = SenseVoiceRecognitionEngine("/nonexistent/model")
         assertFalse(engine.isModelReady())
         assertFalse(engine.load())
     }
 
     @Test
     fun recognizeWithoutModelReturnsExplicitFailure() = kotlinx.coroutines.runBlocking {
-        val engine = SenseVoiceRecognitionEngine(context, "/nonexistent/model")
+        val engine = SenseVoiceRecognitionEngine("/nonexistent/model")
         val result = engine.recognize(
             RecognitionRequest(
                 sessionId = "s1",

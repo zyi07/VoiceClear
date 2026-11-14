@@ -1,5 +1,75 @@
 # VoiceClear 开发日志
 
+## 2026-11-14 08:45 - 改用官方 sherpa-onnx AAR，修复引擎加载失败
+
+**问题现象：**
+
+用户实测（华为 PLA-AL10 / Android 16）报告：模型下载完成，但点「按住说话」仍提示未就绪。
+
+**诊断包给出的确切错误：**
+
+```
+I/ModelSetup: 模型已就绪
+E/SenseVoice: 模型加载失败: Unable to create directory: /lib/linux-aarch64
+E/Main: 识别引擎加载失败
+```
+
+**根因（已通过 javap 反编译确认）：**
+
+第三方 Maven 包 `com.litongjava:sherpa-onnx-java-api:1.0.1` 里的
+`LibraryUtils.load()` 是**桌面平台**实现：
+
+1. 读 `System.getProperty("user.home")` 拼 `$HOME/lib/<os>-<arch>/`；
+2. 在该目录创建文件，从 jar 内资源解压 native 库；
+3. 用 `System.load(绝对路径)` 加载。
+
+Android 上 `user.home` 为 null → 路径退化成 `/lib/linux-aarch64` →
+应用无权在根目录创建 `/lib` → 抛错。
+
+官方 Android 用法（`kotlin-api/OfflineRecognizer.kt`）只有一行：
+`System.loadLibrary("sherpa-onnx-jni")`，由系统从 APK 的 `lib/<abi>/` 加载，无需解压。
+
+**更严重的问题：版本不匹配。**
+
+- APK 里的 native 库是 **v2.0.1**（官方 Android release）；
+- 第三方 jar 1.0.1 的 Java API 对应的是**更早版本**的 native 库
+  （实测其 JNI 依赖 onnxruntime `VERS_1.17.1`，而 v2.0.1 用 `VERS_1.28.2`）。
+
+两者配套关系不保证，是潜在的隐蔽故障。
+
+**修复：改用官方 AAR**
+
+- 从 GitHub Release 下载 `sherpa-onnx-2.0.1.aar`（49 MB，含 arm64-v8a / armeabi-v7a /
+  x86 / x86_64 全部 native 库 + 官方 Kotlin API）；
+- 存为 `libs/sherpa-onnx-2.0.1.aar`，Gradle 用 `implementation(files(...))` 引入；
+- 删除手工维护的 `app/src/main/jniLibs/`（由 AAR 提供，版本天然一致）；
+- 引擎改用官方 Kotlin API（data class 直接赋值，不再用 Builder）。
+
+**顺带修好的两个真实配置错误（靠实测推理发现的）：**
+
+1. `OfflineModelConfig.tokens` **必须**设为 tokens.txt 的绝对路径，
+   否则 native 侧报 "Errors found in config!"、结果为空。
+   （用官方 Python API 跑同一模型同一音频得到正确文本，才定位到是配置而非模型问题。）
+2. native 库加载顺序：`libonnxruntime.so` 必须**先**加载，
+   否则 `OrtGetApiBase` 符号未解析，`createStream` 直接段错误（本机实测到 core dump）。
+
+**验证方式：**
+
+- 用官方 Python API（sherpa-onnx 2.0.1）跑同一模型同一音频，
+  识别出 `'开饭时间早上9点至下午5点。'`（0.448s），确认**模型与音频本身无问题**，
+  问题在 Java 侧配置与加载方式。
+- 官方 AAR 内的 native 库与原先手工放入的 jniLibs **字节级一致**
+  （`libonnxruntime.so` 同为 22249560 字节），说明 native 库本身一直是对的，
+  错的只是 Java 绑定。
+
+**遗留限制：**
+
+- Android 的 .so 依赖 `libandroid.so`，无法在本机 Linux 上运行完整推理，
+  因此**最终识别结果仍需真机验证**（这是本次修复的主要不确定点）。
+- 但相比之前，版本配套问题已从根上消除：Java API 与 native 库现在同属 v2.0.1。
+
+---
+
 ## 2026-11-14 01:35 - 修复模型下载必然失败：清单漏声明 INTERNET 权限
 
 **问题现象：**

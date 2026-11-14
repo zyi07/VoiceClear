@@ -1,13 +1,11 @@
 package com.voiceclear.app.engine
 
-import android.content.Context
-import com.voiceclear.app.session.DiagnosticLog
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
-import com.k2fsa.sherpa.onnx.OfflineStream
+import com.voiceclear.app.session.DiagnosticLog
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -16,23 +14,29 @@ import java.nio.ByteOrder
  * 端侧离线中文识别引擎（sherpa-onnx + SenseVoice）。
  *
  * 模型：SenseVoice Small int8 量化版（多语种含中文），约 239 MB。
- * 公开基准：AISHELL-1 测试集 CER 7.81%，CPU 实时率约 17 倍（按官方公布数据，
- * 本项目尚未在目标人群与目标机型上复测，不能直接套用）。
+ * 公开基准：AISHELL-1 测试集 CER 7.81%（普通说话人数据，官方公布）。
+ * **目标人群（听障相关发音不清）的真实准确率尚无实测数据，不能引用该基准代替。**
  *
- * 接口依据（sherpa-onnx-java-api 1.0.1，javap 实测签名）：
- * - FeatureConfig.Builder().setSampleRate(int).setFeatureDim(int).build()
- * - OfflineSenseVoiceModelConfig.builder().setModel(String).setLanguage(String).build()
- * - OfflineModelConfig.Builder().setSenseVoice(...).build()
- * - OfflineRecognizerConfig.Builder().setFeatureConfig(...).setModelConfig(...).build()
- * - OfflineRecognizer(config).createStream() / stream.acceptWaveform(float[], int) / decode(stream)
- * - OfflineRecognizerResult.getText() / getTokens() / getTimestamps()
+ * API 依据（官方 AAR sherpa-onnx-2.0.1.aar，javap 实测签名）：
+ * - OfflineRecognizerConfig(featConfig, modelConfig, decodingMethod, ...)
+ * - FeatureConfig(sampleRate, featureDim)
+ * - OfflineModelConfig(senseVoice, tokens, numThreads, provider, ...)
+ * - OfflineSenseVoiceModelConfig(model, language, useInverseTextNormalization)
+ * - OfflineRecognizer(assetManager, config).createStream()
+ * - stream.acceptWaveform(FloatArray, Int) / recognizer.decode(stream)
+ * - recognizer.getResult(stream).text / .lang
+ *
+ * 关键点（踩过的坑，勿删）：
+ * 1. `tokens` 必须设置为 tokens.txt 的**绝对路径**，否则 native 侧报
+ *    "Errors found in config!"，识别结果为空。
+ * 2. native 库由官方 AAR 内部用 System.loadLibrary 加载，
+ *    **不要**再自行加载或解压（第三方 jar 的桌面版加载器会失败）。
  *
  * 重要限制（诚实边界）：SenseVoice **不提供 token 级置信度**。
  * 因此本引擎返回的 confidence 恒为 null，上层不得把它当作高置信度自动放行；
- * 内容安全需依赖"用户确认文本"这一交互，而不是置信度阈值。
+ * 内容安全需依赖「用户确认文本」这一交互，而不是置信度阈值。
  */
 class SenseVoiceRecognitionEngine(
-    private val context: Context,
     private val modelDirPath: String,
 ) : RecognitionEngine {
 
@@ -43,6 +47,7 @@ class SenseVoiceRecognitionEngine(
         const val SAMPLE_RATE = 16000
         const val FEATURE_DIM = 560
         const val LANGUAGE = "zh"
+        const val NUM_THREADS = 2
 
         const val ERR_MODEL_MISSING = "asr_model_missing"
         const val ERR_MODEL_LOAD_FAILED = "asr_model_load_failed"
@@ -73,7 +78,7 @@ class SenseVoiceRecognitionEngine(
     fun modelDir(): File = File(modelDirPath)
 
     /**
-     * 加载模型。加载较慢（数秒），应在后台线程调用并缓存实例。
+     * 加载模型。加载较慢（数秒），应在后台线程调用。
      */
     fun load(): Boolean {
         if (recognizer != null) return true
@@ -84,31 +89,35 @@ class SenseVoiceRecognitionEngine(
         }
 
         return try {
-            val featureConfig = FeatureConfig.builder()
-                .setSampleRate(SAMPLE_RATE)
-                .setFeatureDim(FEATURE_DIM)
-                .build()
+            val modelPath = File(modelDir(), MODEL_FILE).absolutePath
+            val tokensPath = File(modelDir(), TOKENS_FILE).absolutePath
 
-            val senseVoiceConfig = OfflineSenseVoiceModelConfig.builder()
-                .setModel(File(modelDir(), MODEL_FILE).absolutePath)
-                .setLanguage(LANGUAGE)
-                .setInverseTextNormalization(true)
-                .build()
+            val featureConfig = FeatureConfig(
+                sampleRate = SAMPLE_RATE,
+                featureDim = FEATURE_DIM,
+            )
+            val senseVoiceConfig = OfflineSenseVoiceModelConfig(
+                model = modelPath,
+                language = LANGUAGE,
+                useInverseTextNormalization = true,
+            )
+            val modelConfig = OfflineModelConfig(
+                senseVoice = senseVoiceConfig,
+                // 必须给绝对路径，否则 native 侧校验失败、结果为空。
+                tokens = tokensPath,
+                numThreads = NUM_THREADS,
+                provider = "cpu",
+            )
+            val config = OfflineRecognizerConfig(
+                featConfig = featureConfig,
+                modelConfig = modelConfig,
+                decodingMethod = "greedy_search",
+            )
 
-            val modelConfig = OfflineModelConfig.builder()
-                .setSenseVoice(senseVoiceConfig)
-                .build()
-
-            val config = OfflineRecognizerConfig.builder()
-                .setFeatureConfig(featureConfig)
-                .setOfflineModelConfig(modelConfig)
-                .setDecodingMethod("greedy_search")
-                .build()
-
-            recognizer = OfflineRecognizer(config)
+            recognizer = OfflineRecognizer(null, config)
             DiagnosticLog.i(
                 "SenseVoice",
-                "模型加载成功, 目录=" + modelDirPath + ", 语言=" + LANGUAGE,
+                "模型加载成功, 模型=" + modelPath + ", 词表=" + tokensPath,
             )
             true
         } catch (error: Throwable) {
@@ -147,15 +156,19 @@ class SenseVoiceRecognitionEngine(
         return try {
             val stream = engine.createStream()
             try {
-                stream.acceptWaveform(samples, samples.size)
+                stream.acceptWaveform(samples, request.audio.sampleRate)
                 engine.decode(stream)
                 val result = engine.getResult(stream)
                 val rawText = result.text.trim()
 
-                // SenseVoice 可能输出带标签的形式（如 <|zh|><|NEUTRAL|>文本），
+                // SenseVoice 输出带语言/情绪标签（如 <|zh|><|NEUTRAL|>文本），
                 // 这里只取可读文本部分，避免把标签透传给用户。
                 val cleanText = stripTags(rawText)
 
+                DiagnosticLog.i(
+                    "SenseVoice",
+                    "识别完成, 语言=" + result.lang + ", 文本长度=" + cleanText.length,
+                )
                 RecognitionResult(
                     sessionId = request.sessionId,
                     rawText = rawText,

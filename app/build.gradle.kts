@@ -24,24 +24,6 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = false
-            // sherpa-onnx-java-api 的 jar 内含桌面端 native 库（osx/win/linux），
-            // 在 Android 上完全无用且可能引发加载冲突，这里排除掉。
-            excludes += setOf(
-                "native/osx-aarch64/**",
-                "native/osx-x64/**",
-                "native/win-x64/**",
-                "native/linux-aarch64/**",
-                "native/linux-x64/**",
-            )
-        }
-        resources {
-            excludes += setOf(
-                "native/osx-aarch64/**",
-                "native/osx-x64/**",
-                "native/win-x64/**",
-                "native/linux-aarch64/**",
-                "native/linux-x64/**",
-            )
         }
     }
 
@@ -113,9 +95,16 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
 
     // sherpa-onnx 端侧离线识别（Apache-2.0）。
-    // 该 artifact 只提供 Java 绑定，native 库通过 jniLibs/ 随包分发，
-    // 与 app/src/main/jniLibs/arm64-v8a 等目录中的 .so 配套。
-    implementation("com.litongjava:sherpa-onnx-java-api:1.0.1")
+    //
+    // 使用**官方 AAR**（来自 GitHub Release v2.0.1），而非第三方 Maven 重新打包版：
+    // 第三方 jar（com.litongjava:sherpa-onnx-java-api）的 LibraryUtils 是**桌面平台**的
+    // 加载器，会读 user.home 拼 $HOME/lib/<os>-<arch>/ 并解压 native 库；
+    // Android 上 user.home 为 null，路径退化成 /lib/linux-aarch64，
+    // 应用无权创建该目录，于是抛 "Unable to create directory: /lib/linux-aarch64"。
+    // 官方 AAR 直接用 System.loadLibrary，从 APK 的 lib/<abi>/ 加载，无此问题。
+    //
+    // AAR 内含全部 ABI 的 native 库，这里只保留目标设备需要的两种。
+    implementation(files("../libs/sherpa-onnx-2.0.1.aar"))
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

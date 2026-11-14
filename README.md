@@ -71,8 +71,17 @@ app/src/main/java/com/voiceclear/app/
 app/src/main/java/com/voiceclear/app/engine/
   SenseVoiceRecognitionEngine.kt   # 识别引擎
   ModelDownloadManager.kt           # 模型下载与解压
+  ModelSource.kt                    # 下载源定义与降级顺序
   RecognitionEngineFactory.kt       # 引擎选择（模型未就绪时拒绝伪造）
+libs/sherpa-onnx-2.0.1.aar           # 官方 AAR（Java API + 全部 ABI 的 native 库）
 ```
+
+**为什么用官方 AAR 而不是 Maven 上的 jar**：第三方重新打包版的 `LibraryUtils` 是
+**桌面平台**的加载器，会在 `$HOME/lib/<os>-<arch>/` 解压 native 库；
+Android 上 `user.home` 为 null，路径退化成 `/lib/linux-aarch64`，应用无权创建该目录，
+于是抛 `Unable to create directory: /lib/linux-aarch64`。
+官方 AAR 直接用 `System.loadLibrary`，由系统从 APK 的 `lib/<abi>/` 加载。
+**Java API 与 native 库必须同版本**，官方 AAR 保证这一点。
 
 **已知限制**：SenseVoice 不提供 token 级置信度，因此引擎返回 `confidence = null`，
 上层不得以置信度阈值自动放行内容，内容安全依赖"用户确认文本"这一交互。

@@ -28,7 +28,6 @@ object RecognitionEngineFactory {
         }
 
         val engine = SenseVoiceRecognitionEngine(
-            context = context,
             modelDirPath = downloadManager.modelDir().absolutePath,
         )
         return Created(
