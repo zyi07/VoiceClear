@@ -34,6 +34,31 @@ android {
      * 而报错是 "Permission denied (missing INTERNET permission?)"——不翻诊断日志
      * 很难定位。这里把它变成构建期硬门禁。
      */
+    /**
+     * 校验 SenseVoice 推理参数与官方 sherpa-onnx 默认值一致。
+     *
+     * 背景：featureDim 误填 560（正确 80）时，native 侧抛维度不匹配异常后
+     * **静默返回空结果**——不报错、不崩溃，只是识别不出任何内容。
+     * 真机上极难定位，因此固化为构建期门禁。
+     */
+    val checkAsrConfig by tasks.registering {
+        doLast {
+            val script = rootProject.file("tools/check_asr_config.py")
+            val process = ProcessBuilder(
+                "python3", script.absolutePath,
+            ).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+            logger.lifecycle(output)
+            if (exitCode != 0) {
+                throw GradleException(
+                    "SenseVoice 配置校验未通过（退出码 " + exitCode + "），" +
+                        "参数错误会导致识别静默返回空结果，请修正后重新构建。",
+                )
+            }
+        }
+    }
+
     val checkApkPermissions by tasks.registering {
         dependsOn("assembleDebug")
         doLast {

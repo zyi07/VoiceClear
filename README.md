@@ -113,6 +113,7 @@ adb logcat -v threadtime -s VoiceClear:V > voiceclear-log.txt   # 实时
 ```bash
 ./gradlew :app:assembleDebug          # 构建
 ./gradlew :app:checkApkPermissions     # APK 权限门禁（缺权限则构建失败）
+./gradlew :app:checkAsrConfig         # 识别参数对照门禁（与官方 sherpa-onnx 一致性）
 ./gradlew :app:testDebugUnitTest      # 单元测试（65 项）
 ./gradlew :app:lintDebug              # 静态检查
 python3 tools/test_tools.py           # 工具测试（15 项）

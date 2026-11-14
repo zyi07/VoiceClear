@@ -1,5 +1,91 @@
 # VoiceClear 开发日志
 
+## 2026-11-14 13:50 - 修正 SenseVoice featureDim（560→80），识别终于能出文本
+
+**问题现象：**
+
+用户实测报告仍无法正常使用。诊断包显示录音与模型都正常，但识别结果为空。
+
+**诊断包的证据链：**
+
+```
+I/Capture: 录音已开始, 采样率=16000, 缓冲区=5120 字节
+I/Capture: 录音已停止, 时长=2560ms, 字节=81920          ← 录音正常，2.56 秒
+I/SenseVoice: 识别完成, 语言=, 文本长度=0, 音频时长=2ms, RMS=0.0440, 峰值=0.4175
+```
+
+- `RMS=0.0440`、`峰值=0.4175` → **确实录到了声音**（不是静音）；
+- `语言=` 为空、`文本长度=0` → 模型连语言标签都没输出；
+- 录音流程修复**已生效**（2.56 秒，不是 60 秒）。
+
+**根因（用官方 Python API 做参数对照定位）：**
+
+官方 `sherpa_onnx.OfflineRecognizer.from_sense_voice` 的默认参数：
+
+```
+feature_dim = 80          ← 我写的是 560
+language   = ''          ← 我写的是 "zh"
+```
+
+实测四种组合（同一模型、同一音频）：
+
+```
+feature_dim= 80 language=''     -> '开饭时间早上9点至下午5点。'   ✅
+feature_dim= 80 language='zh'   -> '开饭时间早上9点至下午5点。'   ✅
+feature_dim=560 language=''     -> ''                              ❌
+feature_dim=560 language='zh'   -> ''                              ❌
+```
+
+native 侧的真实报错（在官方 Python 里能看到，Android 上被吞掉了）：
+
+```
+Got invalid dimensions for input: x for the following indices
+ index: 2 Got: 3920 Expected: 560
+Return an empty result
+```
+
+**异常被 native 层捕获后静默返回空结果**——不崩溃、不报错、不打日志。
+这就是它在真机上表现为「完全无法使用」而毫无线索的原因。
+
+**修复：**
+
+- `FEATURE_DIM`：560 → **80**（sherpa-onnx 对 SenseVoice 的特征维度约定，
+  与模型 ONNX 内部的 560 不是同一个概念）；
+- `LANGUAGE`："zh" → **""**（空表示自动检测，与官方默认一致，
+  保留模型的多语种能力）；
+- 顺带修正日志里的音频时长计算：`samples.size / SAMPLE_RATE` 是整数除法，
+  40960 点 ÷ 16000 得 2（被截断），应写成 `samples.size * 1000L / SAMPLE_RATE`。
+
+**修复后的配置已用官方 Python API 完整复现验证：**
+
+```
+zh.wav: dur=5.59s rms=0.1321 decode=262ms text='开饭时间早上9点至下午5点。'
+en.wav: dur=7.15s rms=0.1782 decode=348ms text='The tribal chieftain called for the boy...'
+```
+
+中英文都正确识别，耗时 262–348 ms。
+
+**流程改进：把这类错误挡在构建期。**
+
+这类「静默失败」的配置错误靠人工 review 几乎不可能发现，因此固化两道保障：
+
+1. `tools/check_asr_config.py`：把 Kotlin 源码里的推理参数与官方 Python API
+   默认值逐项对照，不一致就退出码非零；
+2. Gradle 任务 `:app:checkAsrConfig` 作为构建门禁。
+
+**两道保障都实测有效**：
+
+- 单元测试 `SenseVoiceConfigTest`（5 项）锁定关键参数；
+- 故意把 FEATURE_DIM 改回 560 后，检查脚本报「实际 560，期望 80」并退出码 1，
+  恢复后重新通过。
+
+**遗留：**
+
+- 目标人群（听障相关发音不清）的识别准确率仍无数据——
+  这次修的是「完全识别不出」，不是「识别不准」。
+
+---
+
 ## 2026-11-14 12:10 - 修复录音流程：改为「点击开始/再次点击停止」，消除 60 秒空转
 
 **问题现象：**

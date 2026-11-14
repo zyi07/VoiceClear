@@ -45,8 +45,28 @@ class SenseVoiceRecognitionEngine(
         const val MODEL_FILE = "model.int8.onnx"
         const val TOKENS_FILE = "tokens.txt"
         const val SAMPLE_RATE = 16000
-        const val FEATURE_DIM = 560
-        const val LANGUAGE = "zh"
+
+        /**
+         * 特征维度必须是 **80**。
+         *
+         * 实测（官方 Python API 同模型同音频对照）：
+         *   feature_dim=80  → '开饭时间早上9点至下午5点。'  ✅
+         *   feature_dim=560 → ''（空）
+         *
+         * 原因：native 侧按 feature_dim 计算特征帧数，
+         * 填 560 会导致输入维度不匹配：
+         *   "Got invalid dimensions for input: x ... index: 2 Got: 3920 Expected: 560"
+         * 异常被捕获后**静默返回空结果**——不报错，只是识别不出内容。
+         */
+        const val FEATURE_DIM = 80
+
+        /**
+         * 语言标识。留空表示自动检测。
+         *
+         * 官方 Python API 的默认值就是 ""；显式填 "zh" 实测同样可用，
+         * 但留空可同时支持中英日韩粤，与模型的多语种能力一致。
+         */
+        const val LANGUAGE = ""
         const val NUM_THREADS = 2
 
         const val ERR_MODEL_MISSING = "asr_model_missing"
@@ -170,7 +190,7 @@ class SenseVoiceRecognitionEngine(
                 DiagnosticLog.i(
                     "SenseVoice",
                     "识别完成, 语言=" + result.lang + ", 文本长度=" + cleanText.length +
-                        ", 音频时长=" + (samples.size / SAMPLE_RATE) + "ms" +
+                        ", 音频时长=" + (samples.size * 1000L / SAMPLE_RATE) + "ms" +
                         ", RMS=" + String.format(java.util.Locale.US, "%.4f", rms) +
                         ", 峰值=" + String.format(java.util.Locale.US, "%.4f", peak),
                 )
