@@ -165,9 +165,14 @@ class SenseVoiceRecognitionEngine(
                 // 这里只取可读文本部分，避免把标签透传给用户。
                 val cleanText = stripTags(rawText)
 
+                // 记录音频能量：用于区分「没录到声音」与「录到了但识别不出」。
+                val (rms, peak) = audioEnergy(samples)
                 DiagnosticLog.i(
                     "SenseVoice",
-                    "识别完成, 语言=" + result.lang + ", 文本长度=" + cleanText.length,
+                    "识别完成, 语言=" + result.lang + ", 文本长度=" + cleanText.length +
+                        ", 音频时长=" + (samples.size / SAMPLE_RATE) + "ms" +
+                        ", RMS=" + String.format(java.util.Locale.US, "%.4f", rms) +
+                        ", 峰值=" + String.format(java.util.Locale.US, "%.4f", peak),
                 )
                 RecognitionResult(
                     sessionId = request.sessionId,
@@ -223,6 +228,25 @@ class SenseVoiceRecognitionEngine(
             output[index] = buffer.short.toFloat() / 32768.0f
         }
         return output
+    }
+
+    /**
+     * 计算音频能量。
+     *
+     * 返回 (RMS, 峰值)。RMS 接近 0 说明基本是静音——用户可能没说话、
+     * 麦克风被占用，或录音路由有问题；RMS 正常但识别为空则说明模型
+     * 没认出这段发音，需要进一步排查模型或采集质量。
+     */
+    private fun audioEnergy(samples: FloatArray): Pair<Double, Double> {
+        if (samples.isEmpty()) return Pair(0.0, 0.0)
+        var sum = 0.0
+        var peak = 0.0
+        for (value in samples) {
+            val abs = if (value < 0) -value.toDouble() else value.toDouble()
+            sum += abs * abs
+            if (abs > peak) peak = abs
+        }
+        return Pair(Math.sqrt(sum / samples.size), peak)
     }
 
     /** 去掉模型输出中的标签，只保留可读文本。 */

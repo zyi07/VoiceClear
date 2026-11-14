@@ -20,6 +20,7 @@
     <string name="warning_low_confidence">识别置信度较低，建议确认或修改文本后再播放</string>
     <string name="error_capture_failed">录音失败</string>
     <string name="no_speech_detected">未采集到有效语音</string>
+    <string name="recognition_empty">已录音，但没能识别出文字。请靠近麦克风、放慢语速再说一次。</string>
     <string name="confidence_unknown">未知</string>
     <string name="hint_recognized_text">请确认或修改识别出的文字</string>
 </resources>

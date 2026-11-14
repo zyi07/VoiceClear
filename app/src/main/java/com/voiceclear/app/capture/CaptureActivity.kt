@@ -189,17 +189,42 @@ class CaptureActivity : ComponentActivity() {
         performCapture()
     }
 
+    /**
+     * 采集录音。两段式：第一次点击开始录音，第二次点击停止并入库。
+     *
+     * 早期实现是阻塞式一次性录满固定时长，用户无法控制何时结束，
+     * 导致录进去大量静音、识别结果为空。
+     */
     private fun performCapture() {
+        if (audioCapture.isRecording()) {
+            stopCapture()
+            return
+        }
+        startCapture()
+    }
+
+    private fun startCapture() {
         controller.startRecording()
+        val failure = audioCapture.start(controller.sessionId)
+        if (failure != null) {
+            DiagnosticLog.e("Capture", "录音启动失败, code=" + failure)
+            statusText.setText(R.string.capture_permission_needed)
+            return
+        }
         statusText.setText(R.string.capture_status_recording)
+        recordButton.setText(R.string.capture_stop)
+        DiagnosticLog.i("Capture", "录音已开始")
+    }
+
+    private fun stopCapture() {
         recordButton.isEnabled = false
-        val sessionId = controller.sessionId
 
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
-                audioCapture.capture(sessionId)
+                audioCapture.stop()
             }
             recordButton.isEnabled = true
+            recordButton.setText(R.string.capture_record)
 
             when (result) {
                 is AudioCapture.CaptureResult.Failure -> {

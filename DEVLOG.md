@@ -1,5 +1,80 @@
 # VoiceClear 开发日志
 
+## 2026-11-14 12:10 - 修复录音流程：改为「点击开始/再次点击停止」，消除 60 秒空转
+
+**问题现象：**
+
+用户实测（华为 PLA-AL10 / Android 16）报告：模型下载完成、引擎加载成功，
+但识别结果始终为空。
+
+**诊断包给出的关键证据：**
+
+```
+I/SenseVoice: 模型加载成功, 模型=.../model.int8.onnx, 词表=.../tokens.txt
+I/Main: 识别引擎就绪: sherpa-sensevoice-zh
+I/Capture: 采集完成, 耗时=60253ms, 时长=59840ms, 采样率=16000
+I/SenseVoice: 识别完成, 语言=, 文本长度=0
+I/Recognition: 识别完成, 耗时=172ms, 置信度=unknown, 文本长度=0
+```
+
+**根因：录音流程的架构缺陷（不是小 bug）。**
+
+`采集耗时=60253ms` 直接暴露了问题：一次「说一句话」不该花 60 秒。
+
+原实现把采集写成了**阻塞方法**：
+
+```kotlin
+fun capture(sessionId: String, maxDurationMs: Long = 60_000L): CaptureResult {
+    while (System.currentTimeMillis() - startedAt < maxDurationMs) {
+        val read = recorder.read(readBuffer, 0, readBuffer.size)   // 一直读到 60 秒
+        ...
+    }
+}
+```
+
+而 `MainActivity.startRecording()` 只切换 UI 状态、**根本不启动录音**；
+真正的录音发生在 `stopRecordingAndProcess()` 里——也就是用户点「停止」时
+**才开始录**，然后**阻塞录满 60 秒**。
+
+后果：
+
+1. 用户点「停止」后还要再等一分钟才有结果；
+2. 录进去 59840ms 的音频，其中绝大部分是用户已经说完后的静音；
+3. 模型对大段静音返回空文本（`文本长度=0`）；
+4. 于是表现为「识别完全不可用」。
+
+**修复：改为两段式异步采集。**
+
+- `AudioCapture` 重写为 `start()` / `stop()` / `cancel()`：
+  - `start()` 立即启动 `AudioRecord.startRecording()` 并开后台读取线程，**立即返回**；
+  - `stop()` 置停止标志、等待读取线程收尾（最多 2 秒）、返回音频；
+  - 保留 30 秒上限，防止用户忘记停止。
+- `MainActivity.startRecording()` 现在**真正启动录音**；
+  `stopRecordingAndProcess()` 只负责停止并取回音频。
+- 采集模式 `CaptureActivity` 同样改为两段式（按钮文案在「开始录音/停止录音」间切换）。
+
+**顺带补充的诊断能力：**
+
+- 引擎识别时记录音频的 **RMS 与峰值**。下次若结果为空，可据此区分
+  「根本没录到声音」（RMS≈0）与「录到了但模型没认出」（RMS 正常）。
+- 识别结果为空时给出专门提示（区别于「未采集到有效语音」）。
+
+**过程中修正的真实问题：**
+
+1. 生成 Kotlin 代码时在字符串拼接末尾多了一个 `+`，导致
+   `Syntax error: Expecting an element`——已定位到 AudioCapture 第 213 行修正。
+2. 能量计算里 `peak` 声明为 Double 却赋了 Float——改为全程 Double。
+3. 旧的 `AndroidRuntimeBehaviorTest` 仍调用已删除的 `capture()`，
+   改为测试新的 `start()` / `stop()` 语义，并**新增回归防护**：
+   断言 `MAX_DURATION_MS` 是有限值，防止再次出现「无上限阻塞」。
+
+**仍未验证：**
+
+- 真机上实际录到的时长与 RMS——这需要用户复测。
+- 目标人群的识别准确率仍无数据。
+
+---
+
 ## 2026-11-14 08:45 - 改用官方 sherpa-onnx AAR，修复引擎加载失败
 
 **问题现象：**

@@ -268,6 +268,17 @@ class MainActivity : ComponentActivity() {
         recognizedText.setText("")
         sessionStartAt = System.currentTimeMillis()
         stageStart.clear()
+
+        // **立即开始录音**。早期实现把采集放在"停止"时才做，且是阻塞式读满 60 秒，
+        // 导致用户松手后还要再等一分钟才出结果，且大部分是静音。
+        val failure = audioCapture.start(sessionController.sessionId ?: "")
+        if (failure != null) {
+            DiagnosticLog.e("Main", "录音启动失败: " + failure)
+            showError(getString(R.string.error_capture_failed))
+            sessionController.fail(ProcessingStage.CAPTURE, failure)
+            return
+        }
+
         DiagnosticLog.i(
             "Session",
             "会话开始, id=" + (sessionController.sessionId ?: "none").take(8),
@@ -286,7 +297,8 @@ class MainActivity : ComponentActivity() {
                 if (!hasRecordPermission()) {
                     AudioCapture.CaptureResult.Failure(AudioCapture.ERR_PERMISSION_DENIED)
                 } else {
-                    audioCapture.capture(sessionId)
+                    // 录音已在点"开始"时启动，这里只是停止并取回音频。
+                    audioCapture.stop()
                 }
             }
             recordButton.isEnabled = true
@@ -337,6 +349,15 @@ class MainActivity : ComponentActivity() {
                     sessionController.onRecognitionReady()
                     recognizedText.setText(recognition.normalizedText)
                     renderRecognition(recognition)
+                    if (recognition.normalizedText.isBlank()) {
+                        // 区分「没录到声音」与「录到了但识别不出」：
+                        // 前者由采集层的质量标记报告，后者是这个提示。
+                        DiagnosticLog.w(
+                            "Main",
+                            "识别结果为空, 录音时长=" + segment.durationMs + "ms",
+                        )
+                        showError(getString(R.string.recognition_empty))
+                    }
                 }
             }
         }

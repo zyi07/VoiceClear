@@ -38,12 +38,26 @@ class AndroidRuntimeBehaviorTest {
     fun `capture without permission returns failure instead of crashing`() {
         // 默认未授予 RECORD_AUDIO
         val capture = AudioCapture(context)
-        val result = capture.capture("session-perm")
+        val failure = capture.start("session-perm")
+        assertEquals(AudioCapture.ERR_PERMISSION_DENIED, failure)
+    }
+
+    @Test
+    fun `stop without start reports not recording`() {
+        val capture = AudioCapture(context)
+        val result = capture.stop()
         assertTrue(result is AudioCapture.CaptureResult.Failure)
         assertEquals(
-            AudioCapture.ERR_PERMISSION_DENIED,
+            AudioCapture.ERR_NOT_RECORDING,
             (result as AudioCapture.CaptureResult.Failure).code,
         )
+    }
+
+    @Test
+    fun `capture exposes a bounded maximum duration`() {
+        // 回归防护：早期实现是阻塞式录满固定时长，导致用户以为已停止、
+        // 实际还在录几十秒静音。上限必须存在且是有限值。
+        assertTrue(AudioCapture.MAX_DURATION_MS in 1..60_000L)
     }
 
     @Test

@@ -25,6 +25,8 @@
     <string name="capture_speaker_default">说话人 %1$s</string>
     <string name="capture_stats_format">已采集 %1$d 条 / %2$s</string>
     <string name="capture_permission_needed">需要麦克风权限才能录音</string>
+    <string name="capture_record">开始录音</string>
+    <string name="capture_stop">停止录音</string>
     <string name="export_log">导出全部诊断信息</string>
     <string name="export_log_title">诊断包已导出</string>
     <string name="export_log_saved">已保存完整诊断包（日志 / 崩溃记录 / 设备快照 / 性能指标）</string>
