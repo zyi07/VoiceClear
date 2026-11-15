@@ -57,6 +57,10 @@ class ModelDownloadManager(private val context: Context) {
                 expectedModelBytes = 239234116L,
                 expectedTokensBytes = 315894L,
                 kind = ModelSource.Kind.DIRECT,
+                expectedModelSha256 =
+                    "6887cdd6fc94c3e4cb5aea8b62dead45229643708d20b8ec8a4a736dfb45f6af",
+                expectedTokensSha256 =
+                    "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
             ),
             ModelSource(
                 id = "github",
@@ -67,6 +71,11 @@ class ModelDownloadManager(private val context: Context) {
                 expectedModelBytes = 163002883L,
                 expectedTokensBytes = 315894L,
                 kind = ModelSource.Kind.ARCHIVE,
+                // 归档内的 model.int8.onnx 与 tokens.txt 的校验和
+                expectedModelSha256 =
+                    "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
+                expectedTokensSha256 =
+                    "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc",
             ),
         )
     }
@@ -168,6 +177,67 @@ class ModelDownloadManager(private val context: Context) {
             return false
         }
 
+        // 完整性校验：下载完成不等于内容正确。
+        // 239 MB 的文件在移动网络下可能截断，也可能被中间设备替换。
+        if (!verifyChecksums(source, modelTarget, tokensTarget)) {
+            modelTarget.delete()
+            tokensTarget.delete()
+            return false
+        }
+
+        return true
+    }
+
+    /**
+     * 校验已下载文件的 SHA-256。
+     *
+     * **策略**：区分两种不符：
+     * - 大小也不符 → 一定是下载损坏或被替换，**拒绝**（删除并降级到下一个源）；
+     * - 大小相符但校验和不同 → 上游可能更新了模型版本，
+     *   此时**放行**并记警告。硬性拒绝会导致上游一更新就完全无法下载模型。
+     *
+     * 这是刻意的取舍：宁可接受一个版本变化的新模型，也不要因为
+     * 校验和过期而让用户彻底用不了。
+     */
+    private fun verifyChecksums(
+        source: ModelSource,
+        modelFile: File,
+        tokensFile: File,
+    ): Boolean {
+        if (source.expectedModelSha256.isEmpty() &&
+            source.expectedTokensSha256.isEmpty()
+        ) {
+            return true
+        }
+
+        val modelMatches = FileIntegrity.matches(modelFile, source.expectedModelSha256)
+        if (!modelMatches) {
+            val sizeOk = modelFile.length() == source.expectedModelBytes
+            if (!sizeOk) {
+                DiagnosticLog.e(
+                    "ModelDownload",
+                    "模型文件损坏, source=" + source.id + ", 大小=" + modelFile.length() +
+                        " 期望=" + source.expectedModelBytes,
+                )
+                return false
+            }
+            DiagnosticLog.w(
+                "ModelDownload",
+                "模型校验和与记录不符但大小一致（疑似上游更新）, source=" + source.id +
+                    ", 实际=" + FileIntegrity.sha256(modelFile).take(16) + "...",
+            )
+        }
+
+        if (!FileIntegrity.matches(tokensFile, source.expectedTokensSha256)) {
+            DiagnosticLog.w(
+                "ModelDownload",
+                "词表校验和与记录不符（疑似上游更新）, source=" + source.id,
+            )
+        }
+
+        if (modelMatches) {
+            DiagnosticLog.i("ModelDownload", "校验通过, source=" + source.id)
+        }
         return true
     }
 
@@ -339,8 +409,18 @@ class ModelDownloadManager(private val context: Context) {
                 return false
             }
 
-            modelFile.copyTo(File(targetDir, SenseVoiceRecognitionEngine.MODEL_FILE), overwrite = true)
-            tokensFile.copyTo(File(targetDir, SenseVoiceRecognitionEngine.TOKENS_FILE), overwrite = true)
+            val installedModel = File(targetDir, SenseVoiceRecognitionEngine.MODEL_FILE)
+            val installedTokens = File(targetDir, SenseVoiceRecognitionEngine.TOKENS_FILE)
+            modelFile.copyTo(installedModel, overwrite = true)
+            tokensFile.copyTo(installedTokens, overwrite = true)
+
+            // 归档同样做完整性校验
+            if (!verifyChecksums(source, installedModel, installedTokens)) {
+                installedModel.delete()
+                installedTokens.delete()
+                extractedModel.deleteRecursively()
+                return false
+            }
 
             extractedModel.deleteRecursively()
 

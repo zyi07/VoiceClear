@@ -2,6 +2,7 @@ package com.voiceclear.app.engine
 
 import android.content.Context
 import com.voiceclear.app.session.MetricsCollector
+import com.voiceclear.app.session.ErrorCodes
 
 /**
  * 端侧离线中文识别引擎（sherpa-onnx 方案）的接入占位与能力校验。
@@ -30,8 +31,8 @@ class OnnxOfflineRecognitionEngine(
 ) : RecognitionEngine {
 
     companion object {
-        const val ERR_MODEL_NOT_AVAILABLE = "asr_model_not_available"
-        const val ERR_MODEL_INVALID = "asr_model_invalid"
+        const val ERR_MODEL_NOT_AVAILABLE = ErrorCodes.ASR_MODEL_NOT_AVAILABLE
+        const val ERR_MODEL_INVALID = ErrorCodes.ASR_MODEL_INVALID
     }
 
     override val engineId: String = RecognitionEngineOption.ONNX_OFFLINE.engineId

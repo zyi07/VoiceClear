@@ -3,6 +3,7 @@ package com.voiceclear.app.engine
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import com.voiceclear.app.session.ErrorCodes
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -32,11 +33,11 @@ class AndroidTtsEngine(
 
     companion object {
         const val DEFAULT_SPEECH_RATE = 1.0f
-        const val ERR_NOT_READY = "tts_not_ready"
-        const val ERR_LANGUAGE_UNAVAILABLE = "tts_language_unavailable"
-        const val ERR_SPEAK_FAILED = "tts_speak_failed"
-        const val ERR_UTTERANCE_ERROR = "tts_utterance_error"
-        const val ERR_SYNTHESIS_TIMEOUT = "tts_synthesis_timeout"
+        const val ERR_NOT_READY = ErrorCodes.TTS_NOT_READY
+        const val ERR_LANGUAGE_UNAVAILABLE = ErrorCodes.TTS_LANGUAGE_UNAVAILABLE
+        const val ERR_SPEAK_FAILED = ErrorCodes.TTS_SPEAK_FAILED
+        const val ERR_UTTERANCE_ERROR = ErrorCodes.TTS_UTTERANCE_ERROR
+        const val ERR_SYNTHESIS_TIMEOUT = ErrorCodes.TTS_SYNTHESIS_TIMEOUT
         const val ERR_INIT_TIMEOUT = "tts_init_timeout"
 
         /** 合成超时上限：超过则视为失败并回退，避免用户长时间等待。 */

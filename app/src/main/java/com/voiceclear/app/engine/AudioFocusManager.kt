@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import com.voiceclear.app.session.ErrorCodes
 
 /**
  * 音频焦点管理。
@@ -22,7 +23,7 @@ import android.media.AudioManager
 class AudioFocusManager(context: Context) {
 
     companion object {
-        const val ERR_FOCUS_DENIED = "audio_focus_denied"
+        const val ERR_FOCUS_DENIED = ErrorCodes.FOCUS_DENIED
     }
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager

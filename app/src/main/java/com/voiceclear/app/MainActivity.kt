@@ -8,6 +8,7 @@ import android.view.View
 import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -16,6 +17,7 @@ import com.voiceclear.app.capture.CaptureActivity
 import com.voiceclear.app.engine.AndroidTtsEngine
 import com.voiceclear.app.engine.AudioCapture
 import com.voiceclear.app.engine.AudioFocusManager
+import com.voiceclear.app.capture.DataRetentionPolicy
 import com.voiceclear.app.engine.AudioPlayback
 import com.voiceclear.app.engine.AudioSegment
 import com.voiceclear.app.engine.FakeRecognitionEngine
@@ -31,6 +33,7 @@ import com.voiceclear.app.session.CrashHandler
 import com.voiceclear.app.session.DiagnosticExporter
 import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.MetricsCollector
+import com.voiceclear.app.session.PerformanceBenchmark
 import com.voiceclear.app.session.ProcessingStage
 import com.voiceclear.app.session.SessionController
 import com.voiceclear.app.session.SessionMetrics
@@ -49,25 +52,31 @@ import java.util.Locale
  */
 class MainActivity : ComponentActivity() {
 
-    private lateinit var sessionController: SessionController
-    private lateinit var audioCapture: AudioCapture
-    private lateinit var audioPlayback: AudioPlayback
+    /**
+     * 主流程 ViewModel。
+     *
+     * 承载会话状态机、引擎生命周期与流程编排；
+     * Activity 只负责把状态映射到视图。
+     * 跨配置变更存活，旋转屏幕不会中断正在进行的识别。
+     */
+    private val viewModel: MainViewModel by viewModels()
+
+    private val sessionController get() = viewModel.sessionController
+    private val audioCapture get() = viewModel.audioCapture
+    private val audioPlayback get() = viewModel.audioPlayback
 
     /**
      * 真实识别引擎。模型未下载时为 null，界面会引导用户下载，
      * **不会退回假引擎**（否则用户会误以为看到的是真实识别结果）。
      */
-    private var senseVoiceEngine: SenseVoiceRecognitionEngine? = null
-    private lateinit var modelDownloadManager: ModelDownloadManager
-    private val fallbackEngine: RecognitionEngine = FakeRecognitionEngine()
-    private var activeEngine: RecognitionEngine = FakeRecognitionEngine()
-    private lateinit var synthesisEngine: SynthesisEngine
-    private lateinit var audioFocusManager: AudioFocusManager
-    private val metricsCollector = MetricsCollector()
+    private val senseVoiceEngine get() = viewModel.senseVoiceEngine
+    private val modelDownloadManager get() = viewModel.modelDownloadManager
+    private val lastBenchmark get() = viewModel.lastBenchmark
+    private val synthesisEngine get() = viewModel.synthesisEngine
+    private val audioFocusManager get() = viewModel.audioFocusManager
+    private val metricsCollector get() = viewModel.metricsCollector
 
     /** 计时锚点：记录各阶段耗时，用于端到端延迟测量。 */
-    private val stageStart = mutableMapOf<String, Long>()
-    private var sessionStartAt = 0L
 
     private lateinit var stateText: TextView
     private lateinit var warningText: TextView
@@ -79,8 +88,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var recognizedText: EditText
     private lateinit var confidenceText: TextView
 
-    private var lastCapturedSegment: AudioSegment? = null
-    private var lastRecognition: RecognitionResult? = null
+    private val lastCapturedSegment get() = viewModel.lastCapturedSegment
+    private val lastRecognition get() = viewModel.lastRecognition
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -107,6 +116,16 @@ class MainActivity : ComponentActivity() {
                     metricsProvider = object : DiagnosticExporter.MetricsProvider {
                         override fun exportMetrics(): String = metricsCollector.exportJson()
                     },
+                    benchmarkProvider = object : DiagnosticExporter.BenchmarkProvider {
+                        override fun exportBenchmark(): String {
+                            val record = lastBenchmark
+                            return if (record == null) {
+                                "{\"note\":\"本次尚无识别记录\"}"
+                            } else {
+                                record.toJson()
+                            }
+                        }
+                    },
                 )
                 contentResolver.openOutputStream(uri)?.use { stream ->
                     stream.write(bytes)
@@ -129,14 +148,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        sessionController = SessionController()
-        audioCapture = AudioCapture(applicationContext)
-        audioPlayback = AudioPlayback()
-        audioFocusManager = AudioFocusManager(applicationContext)
-        synthesisEngine = AndroidTtsEngine(applicationContext)
-        modelDownloadManager = ModelDownloadManager(applicationContext)
-        CrashHandler(applicationContext).install()
-        ensureRecognitionEngine()
+        // 引擎与状态由 ViewModel 持有；这里只做一次性准备。
+        viewModel.coldStartMs = VoiceClearApplication.uptimeMs()
+        viewModel.ensureRecognitionEngine()
+        enforceDataRetention()
 
         // 焦点被抢占（来电、其他媒体）时立即停止播放并回到可重试状态。
         audioFocusManager.onFocusLost = {
@@ -179,6 +194,19 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 执行采集数据的保留策略。
+     *
+     * 录音按天自动清理（默认 30 天），元数据不自动删——
+     * 删除权属于用户，由「清空采集数据」显式执行。
+     */
+    private fun enforceDataRetention() {
+        val result = DataRetentionPolicy(applicationContext).enforce()
+        if (!result.disabled && result.deletedFiles > 0) {
+            DiagnosticLog.i("Retention", "启动清理: " + result.describe())
+        }
+    }
+
+    /**
      * 准备识别引擎。
      *
      * 模型未就绪时**不使用假引擎冒充真实识别**：
@@ -187,21 +215,7 @@ class MainActivity : ComponentActivity() {
      * - 这样既不会崩溃，也不会让用户误判结果来源。
      */
     private fun ensureRecognitionEngine() {
-        val created = RecognitionEngineFactory.create(applicationContext)
-        if (created == null) {
-            activeEngine = fallbackEngine
-            DiagnosticLog.w("Main", "识别模型未就绪，当前为占位引擎（界面会提示）")
-            return
-        }
-        val loaded = created.engine.load()
-        if (loaded) {
-            senseVoiceEngine = created.engine
-            activeEngine = created.engine
-            DiagnosticLog.i("Main", "识别引擎就绪: " + created.engine.engineId)
-        } else {
-            activeEngine = fallbackEngine
-            DiagnosticLog.e("Main", "识别引擎加载失败")
-        }
+        viewModel.ensureRecognitionEngine()
     }
 
     /** 刷新界面上的模型状态提示。 */
@@ -256,97 +270,29 @@ class MainActivity : ComponentActivity() {
             PackageManager.PERMISSION_GRANTED
 
     private fun startRecording() {
-        audioPlayback.stop()
-        audioFocusManager.abandonFocus()
-        (synthesisEngine as? AndroidTtsEngine)?.stop()
-        lastCapturedSegment = null
-        lastRecognition = null
-        if (!sessionController.startSession()) {
+        val failure = viewModel.startRecording()
+        if (failure != null) {
+            DiagnosticLog.e("Main", "录音启动失败: " + failure)
             showError(getString(R.string.error_capture_failed))
             return
         }
         recognizedText.setText("")
-        sessionStartAt = System.currentTimeMillis()
-        stageStart.clear()
-
-        // **立即开始录音**。早期实现把采集放在"停止"时才做，且是阻塞式读满 60 秒，
-        // 导致用户松手后还要再等一分钟才出结果，且大部分是静音。
-        val failure = audioCapture.start(sessionController.sessionId ?: "")
-        if (failure != null) {
-            DiagnosticLog.e("Main", "录音启动失败: " + failure)
-            showError(getString(R.string.error_capture_failed))
-            sessionController.fail(ProcessingStage.CAPTURE, failure)
-            return
-        }
-
-        DiagnosticLog.i(
-            "Session",
-            "会话开始, id=" + (sessionController.sessionId ?: "none").take(8),
-        )
         renderState(SessionState.RECORDING)
     }
 
     private fun stopRecordingAndProcess() {
-        val sessionId = sessionController.sessionId ?: return
         recordButton.isEnabled = false
         renderState(SessionState.PROCESSING_RECOGNIZING)
 
-        lifecycleScope.launch {
-            val captureStart = System.currentTimeMillis()
-            val result = withContext(Dispatchers.IO) {
-                if (!hasRecordPermission()) {
-                    AudioCapture.CaptureResult.Failure(AudioCapture.ERR_PERMISSION_DENIED)
-                } else {
-                    // 录音已在点"开始"时启动，这里只是停止并取回音频。
-                    audioCapture.stop()
-                }
-            }
+        viewModel.stopRecordingAndProcess { outcome ->
             recordButton.isEnabled = true
-            stageStart["capture"] = System.currentTimeMillis() - captureStart
-
-            when (result) {
-                is AudioCapture.CaptureResult.Failure -> {
-                    DiagnosticLog.e(
-                        "Capture",
-                        "采集失败, 耗时=" + stageStart["capture"] + "ms, code=" + result.code,
-                    )
-                    sessionController.fail(ProcessingStage.CAPTURE, result.code)
+            when (outcome) {
+                is MainViewModel.RecognitionOutcome.Error -> {
                     showError(getString(R.string.error_capture_failed))
                 }
 
-                is AudioCapture.CaptureResult.Success -> {
-                    DiagnosticLog.i(
-                        "Capture",
-                        "采集完成, 耗时=" + stageStart["capture"] + "ms, 时长=" +
-                            result.segment.durationMs + "ms, 采样率=" + result.segment.sampleRate +
-                            ", 质量标记=" + result.segment.qualityFlags,
-                    )
-                    val segment = result.segment
-                    lastCapturedSegment = segment
-                    if (segment.qualityFlags.contains(AudioCapture.FLAG_EMPTY_CAPTURE)) {
-                        sessionController.fail(ProcessingStage.CAPTURE, AudioCapture.FLAG_EMPTY_CAPTURE)
-                        showError(getString(R.string.no_speech_detected))
-                        return@launch
-                    }
-                    val recognitionStart = System.currentTimeMillis()
-                    val recognition = activeEngine.recognize(
-                        RecognitionRequest(
-                            sessionId = sessionId,
-                            audio = segment,
-                            engineVersion = ENGINE_VERSION,
-                        ),
-                    )
-                    val recognitionMs = System.currentTimeMillis() - recognitionStart
-                    DiagnosticLog.i(
-                        "Recognition",
-                        "识别完成, 耗时=" + recognitionMs + "ms, 置信度=" +
-                            (recognition.confidence?.toString() ?: "unknown") +
-                            ", 文本长度=" + recognition.normalizedText.length,
-                    )
-                    if (!sessionController.isCurrent(sessionId)) return@launch
-                    stageStart["recognition"] = recognitionMs
-                    lastRecognition = recognition
-                    sessionController.onRecognitionReady()
+                is MainViewModel.RecognitionOutcome.Success -> {
+                    val recognition = outcome.recognition
                     recognizedText.setText(recognition.normalizedText)
                     renderRecognition(recognition)
                     if (recognition.normalizedText.isBlank()) {
@@ -354,7 +300,7 @@ class MainActivity : ComponentActivity() {
                         // 前者由采集层的质量标记报告，后者是这个提示。
                         DiagnosticLog.w(
                             "Main",
-                            "识别结果为空, 录音时长=" + segment.durationMs + "ms",
+                            "识别结果为空, 录音时长=" + outcome.segment.durationMs + "ms",
                         )
                         showError(getString(R.string.recognition_empty))
                     }
@@ -373,85 +319,20 @@ class MainActivity : ComponentActivity() {
         if (!sessionController.onConfirmed()) return
         renderState(SessionState.PROCESSING_SYNTHESIZING)
 
-        lifecycleScope.launch {
-            val synthesisStart = System.currentTimeMillis()
-            val result = synthesisEngine.synthesize(
-                SynthesisRequest(
-                    sessionId = sessionId,
-                    confirmedText = confirmed,
-                    voiceProfileRef = null,
-                    engineVersion = ENGINE_VERSION,
-                ),
-            )
-            val synthesisMs = System.currentTimeMillis() - synthesisStart
-            DiagnosticLog.i(
-                "Synthesis",
-                "合成完成, 耗时=" + synthesisMs + "ms, 警告=" + result.warnings.joinToString(),
-            )
-            if (!sessionController.isCurrent(sessionId)) return@launch
-            stageStart["synthesis"] = synthesisMs
-
-            // 播放前先申请焦点：原生 TTS 直接发声，没有焦点会让来电等高优先级音频叠加。
-            if (!audioFocusManager.requestFocus()) {
-                sessionController.fail(ProcessingStage.PLAYBACK, AudioFocusManager.ERR_FOCUS_DENIED)
-                showError(getString(R.string.state_error))
-                recordMetrics(
-                    sessionId = sessionId,
-                    failed = true,
-                    cancelled = false,
-                    confidence = lastRecognition?.confidence,
-                )
-                return@launch
-            }
-
-            sessionController.onSynthesisReady()
-            renderState(SessionState.PLAYING)
-            val playbackStart = System.currentTimeMillis()
-
-            val audio = result.audio
-            if (audio == null) {
-                // 原生 TTS 已在 synthesize() 内完成发声，此处等待引擎回调返回。
-                if (result.warnings.isNotEmpty()) {
-                    sessionController.fail(ProcessingStage.SYNTHESIS, result.warnings.first())
-                    showError(getString(R.string.state_error))
-                    audioFocusManager.abandonFocus()
-                    recordMetrics(
-                        sessionId = sessionId,
-                        failed = true,
-                        cancelled = false,
-                        confidence = lastRecognition?.confidence,
-                    )
-                    return@launch
+        viewModel.synthesizeAndPlay(confirmed) { success ->
+            runOnUiThread {
+                if (!success) {
+                    renderState(SessionState.ERROR)
+                    return@runOnUiThread
                 }
-            } else {
-                withContext(Dispatchers.IO) { audioPlayback.play(audio) }
-            }
-
-            stageStart["playback"] = System.currentTimeMillis() - playbackStart
-            DiagnosticLog.i("Playback", "播放结束, 耗时=" + stageStart["playback"] + "ms")
-            audioFocusManager.abandonFocus()
-            if (sessionController.isCurrent(sessionId)) {
-                sessionController.onPlaybackFinished()
                 renderState(SessionState.COMPLETED)
             }
-            recordMetrics(
-                sessionId = sessionId,
-                failed = false,
-                cancelled = false,
-                confidence = lastRecognition?.confidence,
-            )
         }
     }
 
     private fun onPlayOriginalClicked() {
-        val segment = lastCapturedSegment ?: return
-        lifecycleScope.launch {
-            if (!audioFocusManager.requestFocus()) {
-                showError(getString(R.string.state_error))
-                return@launch
-            }
-            withContext(Dispatchers.IO) { audioPlayback.play(segment) }
-            audioFocusManager.abandonFocus()
+        viewModel.playOriginal {
+            runOnUiThread { renderState(sessionController.state.value) }
         }
     }
 
@@ -459,16 +340,9 @@ class MainActivity : ComponentActivity() {
         audioPlayback.stop()
         audioFocusManager.abandonFocus()
         val sessionId = sessionController.sessionId
-        sessionController.cancel()
+        viewModel.cancelSession()
         renderState(SessionState.CANCELLED)
-        if (sessionId != null) {
-            recordMetrics(
-                sessionId = sessionId,
-                failed = false,
-                cancelled = true,
-                confidence = lastRecognition?.confidence,
-            )
-        }
+        viewModel.recordMetrics(failed = false, cancelled = true)
     }
 
     private fun renderRecognition(recognition: RecognitionResult) {
@@ -532,36 +406,6 @@ class MainActivity : ComponentActivity() {
      *
      * 只保存耗时与结果状态，不包含原始音频和完整文本（技术指导文件 7.1 节）。
      */
-    private fun recordMetrics(
-        sessionId: String,
-        failed: Boolean,
-        cancelled: Boolean,
-        confidence: Float?,
-    ) {
-        val recognitionMs = stageStart["recognition"] ?: 0L
-        val synthesisMs = stageStart["synthesis"] ?: 0L
-        val totalMs = if (sessionStartAt > 0) System.currentTimeMillis() - sessionStartAt else 0L
-        val metrics = SessionMetrics(
-            sessionId = sessionId,
-            captureMs = stageStart["capture"] ?: 0L,
-            recognitionMs = recognitionMs,
-            synthesisMs = synthesisMs,
-            playbackMs = stageStart["playback"] ?: 0L,
-            totalMs = totalMs,
-            outcome = metricsCollector.deriveOutcome(confidence, failed, cancelled),
-            modelVersion = ENGINE_VERSION + "+" + activeEngine.engineId,
-            qualityFlags = lastCapturedSegment?.qualityFlags ?: emptyList(),
-        )
-        metricsCollector.record(metrics)
-        DiagnosticLog.i(
-            "Metrics",
-            "指标记录, outcome=" + metrics.outcome + ", total=" + metrics.totalMs +
-                "ms, capture=" + metrics.captureMs + "ms, recognition=" + metrics.recognitionMs +
-                "ms, synthesis=" + metrics.synthesisMs + "ms",
-        )
-        stageStart.clear()
-        sessionStartAt = 0L
-    }
 
     private fun showError(message: String) {
         DiagnosticLog.e("Error", message)
@@ -571,12 +415,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::modelDownloadManager.isInitialized) {
-            if (senseVoiceEngine == null) {
-                ensureRecognitionEngine()
-            }
-            refreshModelStatus()
+        // 从模型设置页返回后，若引擎尚未就绪则重新尝试加载。
+        if (senseVoiceEngine == null) {
+            ensureRecognitionEngine()
         }
+        refreshModelStatus()
     }
 
     override fun onDestroy() {

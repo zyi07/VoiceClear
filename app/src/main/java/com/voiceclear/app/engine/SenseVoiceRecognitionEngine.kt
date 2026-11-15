@@ -6,6 +6,7 @@ import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import com.voiceclear.app.session.DiagnosticLog
+import com.voiceclear.app.session.ErrorCodes
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -69,10 +70,11 @@ class SenseVoiceRecognitionEngine(
         const val LANGUAGE = ""
         const val NUM_THREADS = 2
 
-        const val ERR_MODEL_MISSING = "asr_model_missing"
-        const val ERR_MODEL_LOAD_FAILED = "asr_model_load_failed"
-        const val ERR_DECODE_FAILED = "asr_decode_failed"
-        const val ERR_EMPTY_AUDIO = "asr_empty_audio"
+        // 统一错误码定义见 session/ErrorCodes.kt。
+        const val ERR_MODEL_MISSING = ErrorCodes.ASR_MODEL_MISSING
+        const val ERR_MODEL_LOAD_FAILED = ErrorCodes.ASR_MODEL_LOAD_FAILED
+        const val ERR_DECODE_FAILED = ErrorCodes.ASR_DECODE_FAILED
+        const val ERR_EMPTY_AUDIO = ErrorCodes.ASR_EMPTY_AUDIO
     }
 
     private var recognizer: OfflineRecognizer? = null

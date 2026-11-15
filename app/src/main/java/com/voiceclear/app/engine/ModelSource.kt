@@ -31,6 +31,25 @@ class ModelSource(
 
     /** 来源类型。 */
     val kind: Kind,
+
+    /**
+     * 模型文件的期望 SHA-256。
+     *
+     * 用途：检测下载损坏或文件被替换。
+     * 留空表示跳过校验（仅用于临时测试源）。
+     *
+     * 实测值：
+     * - ModelScope model_q8.onnx：6887cdd6...f45f6af
+     * - GitHub model.int8.onnx：c71f0ce0...2cd51
+     */
+    val expectedModelSha256: String = "",
+
+    /**
+     * 词表文件的期望 SHA-256。
+     *
+     * 两个来源的 tokens.txt 实测**完全相同**（f449eb28...29a1dc）。
+     */
+    val expectedTokensSha256: String = "",
 ) {
 
     /** 来源类型。 */

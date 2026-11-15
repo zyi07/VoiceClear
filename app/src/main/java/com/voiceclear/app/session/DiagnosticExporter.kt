@@ -29,6 +29,11 @@ object DiagnosticExporter {
         fun exportMetrics(): String
     }
 
+    /** 性能基准导出（可选）。 */
+    interface BenchmarkProvider {
+        fun exportBenchmark(): String
+    }
+
     /**
      * 生成诊断包内容，返回打包好的 zip 字节。
      *
@@ -37,6 +42,7 @@ object DiagnosticExporter {
     fun buildArchive(
         context: Context,
         metricsProvider: MetricsProvider? = null,
+        benchmarkProvider: BenchmarkProvider? = null,
     ): ByteArray {
         val output = java.io.ByteArrayOutputStream()
 
@@ -60,6 +66,14 @@ object DiagnosticExporter {
                 runCatching {
                     zip.putNextEntry(ZipEntry("metrics.json"))
                     zip.write(metricsProvider.exportMetrics().toByteArray(Charsets.UTF_8))
+                    zip.closeEntry()
+                }
+            }
+
+            if (benchmarkProvider != null) {
+                runCatching {
+                    zip.putNextEntry(ZipEntry("benchmark.json"))
+                    zip.write(benchmarkProvider.exportBenchmark().toByteArray(Charsets.UTF_8))
                     zip.closeEntry()
                 }
             }
@@ -100,6 +114,8 @@ object DiagnosticExporter {
         append("snapshot.txt   设备与运行时快照")
         append(Char(10))
         append("metrics.json   性能指标（如有）")
+        append(Char(10))
+        append("benchmark.json  性能基准（如有）")
         append(Char(10))
         append(Char(10))
         append("本包不含原始音频、完整表达文本或个人身份信息。")

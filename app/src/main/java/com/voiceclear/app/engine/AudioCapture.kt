@@ -8,6 +8,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import androidx.core.content.ContextCompat
 import com.voiceclear.app.session.DiagnosticLog
+import com.voiceclear.app.session.ErrorCodes
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -55,15 +56,17 @@ class AudioCapture(
         /** 低于此时长视为没有有效语音。 */
         private const val MIN_VOICE_DURATION_MS = 200L
 
-        const val ERR_PERMISSION_DENIED = "capture_permission_denied"
-        const val ERR_INVALID_BUFFER = "capture_invalid_buffer"
-        const val ERR_ILLEGAL_ARGUMENT = "capture_illegal_argument"
-        const val ERR_NOT_INITIALIZED = "capture_not_initialized"
-        const val ERR_NOT_RECORDING = "capture_not_recording"
-        const val ERR_ILLEGAL_STATE = "capture_illegal_state"
+        // 统一错误码定义见 session/ErrorCodes.kt，这里保留别名以兼容既有调用点。
+        const val ERR_PERMISSION_DENIED = ErrorCodes.CAPTURE_PERMISSION_DENIED
+        const val ERR_INVALID_BUFFER = ErrorCodes.CAPTURE_INVALID_BUFFER
+        const val ERR_ILLEGAL_ARGUMENT = ErrorCodes.CAPTURE_ILLEGAL_ARGUMENT
+        const val ERR_NOT_INITIALIZED = ErrorCodes.CAPTURE_NOT_INITIALIZED
+        const val ERR_NOT_RECORDING = ErrorCodes.CAPTURE_NOT_RECORDING
+        const val ERR_ILLEGAL_STATE = ErrorCodes.CAPTURE_ILLEGAL_STATE
 
-        const val FLAG_EMPTY_CAPTURE = "empty_capture"
-        const val FLAG_TOO_SHORT = "too_short"
+        /** 质量标记（不是错误码）：记录在数据集中，供后续质量分析。 */
+        const val FLAG_EMPTY_CAPTURE = ErrorCodes.CAPTURE_EMPTY
+        const val FLAG_TOO_SHORT = ErrorCodes.CAPTURE_TOO_SHORT
     }
 
     sealed interface CaptureResult {
