@@ -66,6 +66,15 @@
             android:text="@string/capture_title" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/audioSettingsButton"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:minHeight="52dp"
+            android:text="@string/audio_settings" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/exportLogButton"
             style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="match_parent"

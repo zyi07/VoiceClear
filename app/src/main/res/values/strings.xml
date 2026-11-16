@@ -21,6 +21,13 @@
     <string name="error_capture_failed">录音失败</string>
     <string name="no_speech_detected">未采集到有效语音</string>
     <string name="recognition_empty">已录音，但没能识别出文字。请靠近麦克风、放慢语速再说一次。</string>
+    <string name="capture_silent">没有听到声音。请检查麦克风是否被遮挡，或换个安静的环境再试。</string>
+    <string name="capture_low_energy">声音很弱，可能离麦克风太远或环境太吵。</string>
     <string name="confidence_unknown">未知</string>
     <string name="hint_recognized_text">请确认或修改识别出的文字</string>
+    <string name="audio_settings">麦克风设置</string>
+    <string name="audio_source_title">选择麦克风音源</string>
+    <string name="audio_source_current">当前：%1$s</string>
+    <string name="audio_source_help">不同设备对音源的处理差别很大。请用同一句话分别测试两种设置，选出识别更准的那一个。</string>
+    <string name="audio_source_saved">已切换为：%1$s</string>
 </resources>

@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.voiceclear.app.engine.AndroidTtsEngine
 import com.voiceclear.app.engine.AudioCapture
+import com.voiceclear.app.engine.AudioQuality
 import com.voiceclear.app.engine.AudioFocusManager
 import com.voiceclear.app.engine.AudioPlayback
 import com.voiceclear.app.engine.AudioSegment
@@ -17,6 +18,7 @@ import com.voiceclear.app.engine.RecognitionResult
 import com.voiceclear.app.engine.SenseVoiceRecognitionEngine
 import com.voiceclear.app.engine.SynthesisEngine
 import com.voiceclear.app.engine.SynthesisRequest
+import com.voiceclear.app.session.AppSettings
 import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.ErrorCodes
 import com.voiceclear.app.session.MetricsCollector
@@ -46,8 +48,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 会话状态机。 */
     val sessionController = SessionController()
 
-    /** 麦克风采集器。 */
-    val audioCapture = AudioCapture(application)
+    /** 应用设置。 */
+    val settings = AppSettings(application)
+
+    /**
+     * 麦克风采集器。
+     *
+     * 音源由用户设置决定，因此是 var——切换音源后需要重建。
+     */
+    var audioCapture = AudioCapture(application, sourceOption = settings.audioSource)
+        private set
 
     /** 音频播放。 */
     val audioPlayback = AudioPlayback()
@@ -73,6 +83,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 当前生效的识别引擎。 */
     var activeEngine: RecognitionEngine = FakeRecognitionEngine()
+        private set
+
+    /** 停止流程是否正在执行（防止双击导致并发停止）。 */
+    private val stopInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 最近一次采集的音频质量分析。 */
+    var lastQuality: AudioQuality.Analysis? = null
         private set
 
     /** 最近一次识别的性能基准。 */
@@ -172,6 +189,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stopRecordingAndProcess(onRecognized: (RecognitionOutcome) -> Unit) {
         val sessionId = sessionController.sessionId ?: return
 
+        // 幂等保护：按钮双击会让两个协程并发进入，
+        // 第二个 audioCapture.stop() 会因 current 已被置空而返回
+        // "capture_not_recording"，表现为识别完成后弹出一个莫名的错误。
+        // 这里用原子标志保证同一时刻只有一个停止流程。
+        if (!stopInFlight.compareAndSet(false, true)) {
+            DiagnosticLog.w("Main", "忽略重复的停止请求")
+            return
+        }
+
         viewModelScope.launch {
             val captureStart = System.currentTimeMillis()
             val result = withContext(Dispatchers.IO) {
@@ -183,6 +209,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     DiagnosticLog.e("Main", "采集失败, code=" + result.code)
                     sessionController.fail(ProcessingStage.CAPTURE, result.code)
                     onRecognized(RecognitionOutcome.Error(result.code))
+                    stopInFlight.set(false)
                 }
 
                 is AudioCapture.CaptureResult.Success -> {
@@ -203,6 +230,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             AudioCapture.FLAG_EMPTY_CAPTURE,
                         )
                         onRecognized(RecognitionOutcome.Error(AudioCapture.FLAG_EMPTY_CAPTURE))
+                        stopInFlight.set(false)
+                        return@launch
+                    }
+
+                    // **先做质量分析再送模型**。
+                    // 实测发现大量录音几乎是静音，模型在这种输入上会产生
+                    // 幻觉输出（识别出 <|en|> 等无意义内容），用户完全无法理解。
+                    // 这里提前判定并给出可行动的中文提示。
+                    val quality = AudioQuality.analyze(
+                        AudioQuality.toFloatSamples(segment.samples),
+                    )
+                    lastQuality = quality
+                    DiagnosticLog.i(
+                        "Quality",
+                        "音频质量: " + quality.verdict + ", RMS=" +
+                            String.format(java.util.Locale.US, "%.4f", quality.rms) +
+                            ", 峰值=" + String.format(java.util.Locale.US, "%.4f", quality.peak) +
+                            ", 有效占比=" +
+                            String.format(java.util.Locale.US, "%.2f", quality.activeRatio),
+                    )
+
+                    if (quality.verdict == AudioQuality.Verdict.SILENT) {
+                        // 几乎肯定没有有效语音：不送去识别，
+                        // 否则只会得到一句莫名其妙的输出。
+                        sessionController.fail(
+                            ProcessingStage.CAPTURE,
+                            ErrorCodes.CAPTURE_SILENT,
+                        )
+                        onRecognized(RecognitionOutcome.Error(ErrorCodes.CAPTURE_SILENT))
+                        stopInFlight.set(false)
                         return@launch
                     }
 
@@ -234,6 +291,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             recognition.normalizedText.length,
                     )
                     onRecognized(RecognitionOutcome.Success(recognition, segment))
+                    stopInFlight.set(false)
                 }
             }
         }
@@ -372,6 +430,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         audioCapture.cancel()
         sessionController.cancel()
         DiagnosticLog.i("Main", "会话已取消")
+    }
+
+    /**
+     * 应用新的麦克风音源设置。
+     *
+     * 需要重建采集器——AudioRecord 的音源在构造时确定，无法运行时切换。
+     */
+    fun applyAudioSource() {
+        audioCapture = AudioCapture(
+            getApplication(),
+            sourceOption = settings.audioSource,
+        )
+        DiagnosticLog.i(
+            "Main",
+            "已应用麦克风音源: " + settings.audioSource.id,
+        )
     }
 
     /** 状态变化回调，由 Activity 注册以驱动界面刷新。 */

@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AudioCapture(
     private val context: Context,
     private val sampleRate: Int = DEFAULT_SAMPLE_RATE,
+    private val sourceOption: AudioSourceOption = AudioSourceOption.DEFAULT,
 ) {
 
     companion object {
@@ -44,9 +45,6 @@ class AudioCapture(
 
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-
-        /** 使用 VOICE_RECOGNITION 而非 MIC，避免部分设备的 AGC/降噪影响微弱发音线索。 */
-        private const val AUDIO_SOURCE = MediaRecorder.AudioSource.VOICE_RECOGNITION
 
         private const val BUFFER_SIZE_FACTOR = 4
 
@@ -132,7 +130,13 @@ class AudioCapture(
             ) {
                 return ERR_PERMISSION_DENIED
             }
-            AudioRecord(AUDIO_SOURCE, sampleRate, CHANNEL_CONFIG, AUDIO_FORMAT, bufferSize)
+            AudioRecord(
+                sourceOption.sourceConstant,
+                sampleRate,
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT,
+                bufferSize,
+            )
         } catch (error: IllegalArgumentException) {
             DiagnosticLog.e("Capture", "AudioRecord 构造失败: " + error.message)
             return ERR_ILLEGAL_ARGUMENT
@@ -179,7 +183,8 @@ class AudioCapture(
 
             DiagnosticLog.i(
                 "Capture",
-                "录音已开始, 采样率=" + sampleRate + ", 缓冲区=" + bufferSize + " 字节",
+                "录音已开始, 采样率=" + sampleRate + ", 缓冲区=" + bufferSize +
+                    " 字节, 音源=" + sourceOption.id,
             )
             null
         } catch (error: SecurityException) {

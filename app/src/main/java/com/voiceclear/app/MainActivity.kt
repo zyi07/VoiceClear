@@ -1,12 +1,13 @@
 package com.voiceclear.app
 
 import android.Manifest
-import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +17,7 @@ import com.google.android.material.button.MaterialButton
 import com.voiceclear.app.capture.CaptureActivity
 import com.voiceclear.app.engine.AndroidTtsEngine
 import com.voiceclear.app.engine.AudioCapture
+import com.voiceclear.app.engine.AudioSourceOption
 import com.voiceclear.app.engine.AudioFocusManager
 import com.voiceclear.app.capture.DataRetentionPolicy
 import com.voiceclear.app.engine.AudioPlayback
@@ -32,6 +34,7 @@ import com.voiceclear.app.engine.SynthesisRequest
 import com.voiceclear.app.session.CrashHandler
 import com.voiceclear.app.session.DiagnosticExporter
 import com.voiceclear.app.session.DiagnosticLog
+import com.voiceclear.app.session.ErrorCodes
 import com.voiceclear.app.session.MetricsCollector
 import com.voiceclear.app.session.PerformanceBenchmark
 import com.voiceclear.app.session.ProcessingStage
@@ -84,6 +87,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var confirmButton: MaterialButton
     private lateinit var originalButton: MaterialButton
     private lateinit var cancelButton: MaterialButton
+    private lateinit var audioSettingsButton: MaterialButton
     private lateinit var textLabel: TextView
     private lateinit var recognizedText: EditText
     private lateinit var confidenceText: TextView
@@ -170,6 +174,7 @@ class MainActivity : ComponentActivity() {
         confirmButton = findViewById(R.id.confirmButton)
         originalButton = findViewById(R.id.originalButton)
         cancelButton = findViewById(R.id.cancelButton)
+        audioSettingsButton = findViewById(R.id.audioSettingsButton)
         textLabel = findViewById(R.id.textLabel)
         recognizedText = findViewById(R.id.recognizedText)
         confidenceText = findViewById(R.id.confidenceText)
@@ -189,6 +194,7 @@ class MainActivity : ComponentActivity() {
         confirmButton.setOnClickListener { onConfirmClicked() }
         originalButton.setOnClickListener { onPlayOriginalClicked() }
         cancelButton.setOnClickListener { onCancelClicked() }
+        audioSettingsButton.setOnClickListener { showAudioSourceDialog() }
 
         renderState(sessionController.state.value)
     }
@@ -288,7 +294,16 @@ class MainActivity : ComponentActivity() {
             recordButton.isEnabled = true
             when (outcome) {
                 is MainViewModel.RecognitionOutcome.Error -> {
-                    showError(getString(R.string.error_capture_failed))
+                    // 按错误码给出**可行动**的提示，而不是笼统的「录音失败」。
+                    val message = when (outcome.code) {
+                        ErrorCodes.CAPTURE_SILENT -> getString(R.string.capture_silent)
+                        AudioCapture.FLAG_EMPTY_CAPTURE ->
+                            getString(R.string.no_speech_detected)
+                        else -> getString(R.string.error_capture_failed)
+                    }
+                    DiagnosticLog.e("Main", "识别流程错误: " + outcome.code + " - " +
+                        ErrorCodes.describe(outcome.code))
+                    showError(message)
                 }
 
                 is MainViewModel.RecognitionOutcome.Success -> {
@@ -334,6 +349,42 @@ class MainActivity : ComponentActivity() {
         viewModel.playOriginal {
             runOnUiThread { renderState(sessionController.state.value) }
         }
+    }
+
+    /**
+     * 显示麦克风音源选择对话框。
+     *
+     * **为什么要让用户自己选**：哪种音源对「发音不清」的人更好，
+     * 无法由开发者替目标人群决定——AGC 对发音清晰的人是加分，
+     * 对发音不清的人可能反而削弱了关键的辅音线索。
+     * 只有让用户在真实设备上用同一句话对比测试，才能得出结论。
+     */
+    private fun showAudioSourceDialog() {
+        val settings = viewModel.settings
+        val options = AudioSourceOption.ALL
+        val labels = options.map { it.displayName }.toTypedArray()
+        val current = options.indexOf(settings.audioSource)
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.audio_source_title)
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                val option = options[which]
+                settings.audioSource = option
+                viewModel.applyAudioSource()
+                audioSettingsButton.text = getString(
+                    R.string.audio_source_current,
+                    option.displayName,
+                )
+                Toast.makeText(
+                    this,
+                    getString(R.string.audio_source_saved, option.displayName),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                dialog.dismiss()
+            }
+            .setMessage(R.string.audio_source_help)
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun onCancelClicked() {

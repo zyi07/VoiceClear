@@ -46,6 +46,14 @@ object ErrorCodes {
     /** 音频时长过短，视为无效语音。 */
     const val CAPTURE_TOO_SHORT = "capture_too_short"
 
+    /**
+     * 麦克风几乎没有收到声音（RMS 低于静音阈值）。
+     *
+     * 与「音频为空」不同：字节数正常，但信号几乎为零——
+     * 可能是设备静音、路由异常，或用户没对着麦克风说话。
+     */
+    const val CAPTURE_SILENT = "capture_silent"
+
     // ---------- 识别（ASR） ----------
 
     /** 模型文件缺失。不可重试，需先下载模型。 */
@@ -152,6 +160,7 @@ object ErrorCodes {
             CAPTURE_ILLEGAL_STATE -> "录音状态非法"
             CAPTURE_EMPTY -> "没有采集到音频"
             CAPTURE_TOO_SHORT -> "录音过短"
+            CAPTURE_SILENT -> "麦克风没有收到声音"
             ASR_MODEL_MISSING -> "识别模型缺失"
             ASR_MODEL_LOAD_FAILED -> "识别模型加载失败"
             ASR_DECODE_FAILED -> "识别解码失败"
