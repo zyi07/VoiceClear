@@ -12,38 +12,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.voiceclear.app.capture.CaptureActivity
-import com.voiceclear.app.engine.AndroidTtsEngine
 import com.voiceclear.app.engine.AudioCapture
+import com.voiceclear.app.engine.AndroidTtsEngine
+import com.voiceclear.app.engine.RecognitionResult
 import com.voiceclear.app.engine.AudioSourceOption
 import com.voiceclear.app.engine.AudioFocusManager
-import com.voiceclear.app.capture.DataRetentionPolicy
-import com.voiceclear.app.engine.AudioPlayback
-import com.voiceclear.app.engine.AudioSegment
-import com.voiceclear.app.engine.FakeRecognitionEngine
-import com.voiceclear.app.engine.ModelDownloadManager
-import com.voiceclear.app.engine.RecognitionEngineFactory
-import com.voiceclear.app.engine.SenseVoiceRecognitionEngine
-import com.voiceclear.app.engine.RecognitionEngine
-import com.voiceclear.app.engine.RecognitionResult
-import com.voiceclear.app.engine.RecognitionRequest
-import com.voiceclear.app.engine.SynthesisEngine
-import com.voiceclear.app.engine.SynthesisRequest
-import com.voiceclear.app.session.CrashHandler
 import com.voiceclear.app.session.DiagnosticExporter
 import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.ErrorCodes
-import com.voiceclear.app.session.MetricsCollector
 import com.voiceclear.app.session.PerformanceBenchmark
 import com.voiceclear.app.session.ProcessingStage
 import com.voiceclear.app.session.SessionController
 import com.voiceclear.app.session.SessionMetrics
 import com.voiceclear.app.session.SessionState
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /**
@@ -155,7 +138,6 @@ class MainActivity : ComponentActivity() {
         // 引擎与状态由 ViewModel 持有；这里只做一次性准备。
         viewModel.coldStartMs = VoiceClearApplication.uptimeMs()
         viewModel.ensureRecognitionEngine()
-        enforceDataRetention()
 
         // 焦点被抢占（来电、其他媒体）时立即停止播放并回到可重试状态。
         audioFocusManager.onFocusLost = {
@@ -197,19 +179,6 @@ class MainActivity : ComponentActivity() {
         audioSettingsButton.setOnClickListener { showAudioSourceDialog() }
 
         renderState(sessionController.state.value)
-    }
-
-    /**
-     * 执行采集数据的保留策略。
-     *
-     * 录音按天自动清理（默认 30 天），元数据不自动删——
-     * 删除权属于用户，由「清空采集数据」显式执行。
-     */
-    private fun enforceDataRetention() {
-        val result = DataRetentionPolicy(applicationContext).enforce()
-        if (!result.disabled && result.deletedFiles > 0) {
-            DiagnosticLog.i("Retention", "启动清理: " + result.describe())
-        }
     }
 
     /**
@@ -279,7 +248,15 @@ class MainActivity : ComponentActivity() {
         val failure = viewModel.startRecording()
         if (failure != null) {
             DiagnosticLog.e("Main", "录音启动失败: " + failure)
-            showError(getString(R.string.error_capture_failed))
+            // 状态机不允许启动时，区分"确认页误点"与真实失败：
+            // 前者给出可行动的指引，后者保持原提示。
+            val state = sessionController.state.value
+            val message = when (state) {
+                SessionState.AWAITING_CONFIRMATION, SessionState.PLAYING ->
+                    getString(R.string.session_in_progress)
+                else -> getString(R.string.error_capture_failed)
+            }
+            showError(message)
             return
         }
         recognizedText.setText("")
@@ -308,6 +285,11 @@ class MainActivity : ComponentActivity() {
 
                 is MainViewModel.RecognitionOutcome.Success -> {
                     val recognition = outcome.recognition
+                    // 录音达到上限会自动停止采集：用户往往不知道已停止、
+                    // 继续说的话没被录进去，这里明确告知。
+                    if (outcome.segment.durationMs >= AudioCapture.MAX_DURATION_MS - 200) {
+                        showError(getString(R.string.recording_limit_reached))
+                    }
                     recognizedText.setText(recognition.normalizedText)
                     renderRecognition(recognition)
                     if (recognition.normalizedText.isBlank()) {
@@ -370,7 +352,11 @@ class MainActivity : ComponentActivity() {
             .setSingleChoiceItems(labels, current) { dialog, which ->
                 val option = options[which]
                 settings.audioSource = option
-                viewModel.applyAudioSource()
+                if (!viewModel.applyAudioSource()) {
+                    // 录音进行中被拒绝：提示用户先停止，避免以为已生效
+                    showError(getString(R.string.audio_source_busy))
+                    return@setSingleChoiceItems
+                }
                 audioSettingsButton.text = getString(
                     R.string.audio_source_current,
                     option.displayName,
@@ -388,9 +374,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onCancelClicked() {
-        audioPlayback.stop()
-        audioFocusManager.abandonFocus()
-        val sessionId = sessionController.sessionId
+        // 停止播放与焦点释放属于会话取消的一部分，
+        // 由 ViewModel 统一处理，Activity 不重复做一遍。
         viewModel.cancelSession()
         renderState(SessionState.CANCELLED)
         viewModel.recordMetrics(failed = false, cancelled = true)

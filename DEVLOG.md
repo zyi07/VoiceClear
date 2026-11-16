@@ -1,5 +1,36 @@
 # VoiceClear 开发日志
 
+## 2026-11-16 17:10 - 全量代码 review：定位并修复 10 处问题
+
+**触发**：用户要求「跑一遍全量 review 代码，处理发现的问题点，重新打包」。
+
+**Review 方法**：逐文件通读 MainViewModel（469 行）、MainActivity、AudioCapture、
+ModelDownloadManager（校验路径）、DataRetentionPolicy、AppSettings、
+VoiceClearApplication、PerformanceBenchmark，并用脚本核对每个 import 的实际使用次数。
+
+**发现并修复的问题**（按严重度）：
+
+| # | 严重度 | 问题 | 修复 |
+|---|---|---|---|
+| 1 | P0 | **stopInFlight 死锁**：`isCurrent==false` 提前返回与异常路径都不释放标志，识别中取消一次后，后续所有停止请求被 `忽略重复的停止请求` 拦截，**录音永远停不下来** | launch 体改 try/finally 统一释放，删除 4 处分散的 `set(false)` |
+| 2 | P0 | **applyAudioSource 泄漏 AudioRecord**：直接替换实例，旧采集器持有的麦克风不释放，新采集器会初始化失败 | 替换前先 `cancel()` 旧采集器 |
+| 3 | P0 | **录音中可切换音源**：进行中的录音被无声丢弃 | `applyAudioSource()` 改返回 Boolean，RECORDING 状态拒绝切换并提示 |
+| 4 | P1 | 30 秒上限静默截断，用户继续说话丢字无提示 | 识别成功后检查 `durationMs >= MAX_DURATION_MS-200`，提示「超出部分未被录入」 |
+| 5 | P1 | 确认页点「开始」得到误导性的「录音失败」 | 按状态机区分提示：AWAITING_CONFIRMATION/PLAYING → 「上一次表达还没完成」 |
+| 6 | P1 | `cancel()` 与 `cancelSession()` 完全重复 | 删除 `cancel()`，取消时的播放停止/焦点释放并入 `cancelSession()` |
+| 7 | P1 | 保留策略清理在 Activity.onCreate 主线程跑，**每次旋转屏幕重复执行** | 移到 `VoiceClearApplication.onCreate`，进程级一次 + 单线程后台执行 |
+| 8 | P1 | `onCancelClicked` 里 `val sessionId = sessionController.sessionId` 赋值后未使用（死代码） | 随 #6 一并清理 |
+| 9 | P2 | MainActivity 18 个未使用 import（ViewModel 拆分遗留） | 脚本核对使用次数后删除（误删 2 个在用符号，编译期发现并恢复） |
+| 10 | P2 | `AudioCapture.stop()` 先 join 再停 recorder，阻塞中的 `read()` 可能吃满 2 秒超时 | 先 `recorder.stop()`（让 read 立即返回）再 join |
+
+**回归测试**：新增 `StopReleaseTest`（4 项）——验证标志在「正常完成 / 会话过期提前返回 / 抛异常」三种路径下都被释放，防止死锁复发。这正是 #1 的缺陷形态。
+
+**验证**：App 测试 129 → **133 项**全通过；Lint 0 Error；`assembleDebug` + `checkAsrConfig` + `checkApkPermissions` 通过；工具测试 15 项通过。
+
+**Review 中看过但未改的**（判断为无问题）：`verifyChecksums` 的双策略（大小不符拒绝/校验和不符放行）、归档下载的 `finally { archive.delete() }`、`AppSettings` 的 SharedPreferences 用法、`PerformanceBenchmark` 的 RTF 计算。
+
+---
+
 ## 2026-11-16 07:45 - 真机日志分析：环境音影响的三类根因定位与修复
 
 **输入**：用户反馈「环境音的影响还是比较大的」，附第 6 轮真机诊断包

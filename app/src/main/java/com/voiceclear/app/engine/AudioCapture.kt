@@ -209,11 +209,11 @@ class AudioCapture(
 
         session.stopRequested.set(true)
 
-        // 等待读取线程结束，最多等 2 秒，避免 read 阻塞导致界面卡住。
+        // 先停 recorder 再等线程：recorder.stop() 会让阻塞中的 read() 立即返回，
+        // 这样 join 基本瞬时完成；反过来先 join 的话，阻塞中的 read 可能吃满 2 秒超时。
+        runCatching { session.recorder.stop() }
         readerThread?.join(2000)
         readerThread = null
-
-        runCatching { session.recorder.stop() }
         runCatching { session.recorder.release() }
 
         val durationMs = if (sampleRate > 0) {

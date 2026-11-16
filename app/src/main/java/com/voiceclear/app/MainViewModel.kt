@@ -199,110 +199,106 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            val captureStart = System.currentTimeMillis()
-            val result = withContext(Dispatchers.IO) {
-                audioCapture.stop()
-            }
+            try {
 
-            when (result) {
-                is AudioCapture.CaptureResult.Failure -> {
-                    DiagnosticLog.e("Main", "采集失败, code=" + result.code)
-                    sessionController.fail(ProcessingStage.CAPTURE, result.code)
-                    onRecognized(RecognitionOutcome.Error(result.code))
-                    stopInFlight.set(false)
+                val captureStart = System.currentTimeMillis()
+                val result = withContext(Dispatchers.IO) {
+                    audioCapture.stop()
                 }
 
-                is AudioCapture.CaptureResult.Success -> {
-                    val segment = result.segment
-                    lastCapturedSegment = segment
-                    stageStart["capture"] = System.currentTimeMillis() - captureStart
-
-                    DiagnosticLog.i(
-                        "Capture",
-                        "采集完成, 耗时=" + stageStart["capture"] + "ms, 时长=" +
-                            segment.durationMs + "ms, 采样率=" + segment.sampleRate +
-                            ", 质量标记=" + segment.qualityFlags,
-                    )
-
-                    if (segment.qualityFlags.contains(AudioCapture.FLAG_EMPTY_CAPTURE)) {
-                        sessionController.fail(
-                            ProcessingStage.CAPTURE,
-                            AudioCapture.FLAG_EMPTY_CAPTURE,
-                        )
-                        onRecognized(RecognitionOutcome.Error(AudioCapture.FLAG_EMPTY_CAPTURE))
-                        stopInFlight.set(false)
-                        return@launch
+                when (result) {
+                    is AudioCapture.CaptureResult.Failure -> {
+                        DiagnosticLog.e("Main", "采集失败, code=" + result.code)
+                        sessionController.fail(ProcessingStage.CAPTURE, result.code)
+                        onRecognized(RecognitionOutcome.Error(result.code))
                     }
 
-                    // **先做质量分析再送模型**。
-                    // 实测发现大量录音几乎是静音，模型在这种输入上会产生
-                    // 幻觉输出（识别出 <|en|> 等无意义内容），用户完全无法理解。
-                    // 这里提前判定并给出可行动的中文提示。
-                    val quality = AudioQuality.analyze(
-                        AudioQuality.toFloatSamples(segment.samples),
-                    )
-                    lastQuality = quality
-                    DiagnosticLog.i(
-                        "Quality",
-                        "音频质量: " + quality.verdict + ", RMS=" +
-                            String.format(java.util.Locale.US, "%.4f", quality.rms) +
-                            ", 峰值=" + String.format(java.util.Locale.US, "%.4f", quality.peak) +
-                            ", 有效占比=" +
-                            String.format(java.util.Locale.US, "%.2f", quality.activeRatio),
-                    )
+                    is AudioCapture.CaptureResult.Success -> {
+                        val segment = result.segment
+                        lastCapturedSegment = segment
+                        stageStart["capture"] = System.currentTimeMillis() - captureStart
 
-                    if (quality.verdict == AudioQuality.Verdict.SILENT) {
-                        // 几乎肯定没有有效语音：不送去识别，
-                        // 否则只会得到一句莫名其妙的输出。
-                        sessionController.fail(
-                            ProcessingStage.CAPTURE,
-                            ErrorCodes.CAPTURE_SILENT,
+                        DiagnosticLog.i(
+                            "Capture",
+                            "采集完成, 耗时=" + stageStart["capture"] + "ms, 时长=" +
+                                segment.durationMs + "ms, 采样率=" + segment.sampleRate +
+                                ", 质量标记=" + segment.qualityFlags,
                         )
-                        onRecognized(RecognitionOutcome.Error(ErrorCodes.CAPTURE_SILENT))
-                        stopInFlight.set(false)
-                        return@launch
+
+                        if (segment.qualityFlags.contains(AudioCapture.FLAG_EMPTY_CAPTURE)) {
+                            sessionController.fail(
+                                ProcessingStage.CAPTURE,
+                                AudioCapture.FLAG_EMPTY_CAPTURE,
+                            )
+                            onRecognized(RecognitionOutcome.Error(AudioCapture.FLAG_EMPTY_CAPTURE))
+                            return@launch
+                        }
+
+                        // **先做质量分析再送模型**。
+                        // 实测发现大量录音几乎是静音，模型在这种输入上会产生
+                        // 幻觉输出（识别出 <|en|> 等无意义内容），用户完全无法理解。
+                        // 这里提前判定并给出可行动的中文提示。
+                        val quality = AudioQuality.analyze(
+                            AudioQuality.toFloatSamples(segment.samples),
+                        )
+                        lastQuality = quality
+                        DiagnosticLog.i(
+                            "Quality",
+                            "音频质量: " + quality.verdict + ", RMS=" +
+                                String.format(java.util.Locale.US, "%.4f", quality.rms) +
+                                ", 峰值=" + String.format(java.util.Locale.US, "%.4f", quality.peak) +
+                                ", 有效占比=" +
+                                String.format(java.util.Locale.US, "%.2f", quality.activeRatio),
+                        )
+
+                        if (quality.verdict == AudioQuality.Verdict.SILENT) {
+                            // 几乎肯定没有有效语音：不送去识别，
+                            // 否则只会得到一句莫名其妙的输出。
+                            sessionController.fail(
+                                ProcessingStage.CAPTURE,
+                                ErrorCodes.CAPTURE_SILENT,
+                            )
+                            onRecognized(RecognitionOutcome.Error(ErrorCodes.CAPTURE_SILENT))
+                            return@launch
+                        }
+
+                        val recognitionStart = System.currentTimeMillis()
+                        val recognition = activeEngine.recognize(
+                            RecognitionRequest(
+                                sessionId = sessionId,
+                                audio = segment,
+                                engineVersion = ENGINE_VERSION,
+                            ),
+                        )
+                        val recognitionMs = System.currentTimeMillis() - recognitionStart
+
+                        lastBenchmark = PerformanceBenchmark.recordRecognition(
+                            recognitionMs = recognitionMs,
+                            audioMs = segment.durationMs,
+                            modelLoadMs = modelLoadMs,
+                            coldStartMs = coldStartMs,
+                        )
+
+                        if (!sessionController.isCurrent(sessionId)) return@launch
+                        stageStart["recognition"] = recognitionMs
+                        lastRecognition = recognition
+                        sessionController.onRecognitionReady()
+
+                        DiagnosticLog.i(
+                            "Recognition",
+                            "识别完成, 耗时=" + recognitionMs + "ms, 文本长度=" +
+                                recognition.normalizedText.length,
+                        )
+                        onRecognized(RecognitionOutcome.Success(recognition, segment))
                     }
-
-                    val recognitionStart = System.currentTimeMillis()
-                    val recognition = activeEngine.recognize(
-                        RecognitionRequest(
-                            sessionId = sessionId,
-                            audio = segment,
-                            engineVersion = ENGINE_VERSION,
-                        ),
-                    )
-                    val recognitionMs = System.currentTimeMillis() - recognitionStart
-
-                    lastBenchmark = PerformanceBenchmark.recordRecognition(
-                        recognitionMs = recognitionMs,
-                        audioMs = segment.durationMs,
-                        modelLoadMs = modelLoadMs,
-                        coldStartMs = coldStartMs,
-                    )
-
-                    if (!sessionController.isCurrent(sessionId)) return@launch
-                    stageStart["recognition"] = recognitionMs
-                    lastRecognition = recognition
-                    sessionController.onRecognitionReady()
-
-                    DiagnosticLog.i(
-                        "Recognition",
-                        "识别完成, 耗时=" + recognitionMs + "ms, 文本长度=" +
-                            recognition.normalizedText.length,
-                    )
-                    onRecognized(RecognitionOutcome.Success(recognition, segment))
-                    stopInFlight.set(false)
                 }
+            } finally {
+                stopInFlight.set(false)
             }
         }
     }
 
-    /** 取消当前会话。 */
-    fun cancel() {
-        audioCapture.cancel()
-        sessionController.cancel()
-        DiagnosticLog.i("Main", "会话已取消")
-    }
+
 
     /**
      * 记录一次会话指标。
@@ -427,6 +423,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 取消当前会话。 */
     fun cancelSession() {
+        audioPlayback.stop()
+        audioFocusManager.abandonFocus()
         audioCapture.cancel()
         sessionController.cancel()
         DiagnosticLog.i("Main", "会话已取消")
@@ -437,7 +435,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *
      * 需要重建采集器——AudioRecord 的音源在构造时确定，无法运行时切换。
      */
-    fun applyAudioSource() {
+    /**
+     * 应用新的麦克风音源设置。
+     *
+     * @return 录音进行中返回 false（拒绝切换），否则 true。
+     */
+    fun applyAudioSource(): Boolean {
+        // 录音进行中不允许切换：AudioRecord 的音源在构造时确定，
+        // 此刻重建等于丢弃正在进行的录音。先拒绝，让用户停止后再切。
+        if (sessionController.state.value == SessionState.RECORDING) {
+            DiagnosticLog.w("Main", "录音进行中，拒绝切换麦克风音源")
+            return false
+        }
+        // 必须先释放旧采集器：它可能持有 AudioRecord 与麦克风。
+        // 不清理的话旧实例泄漏，麦克风被占着，新采集器会初始化失败。
+        audioCapture.cancel()
         audioCapture = AudioCapture(
             getApplication(),
             sourceOption = settings.audioSource,
@@ -446,6 +458,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "Main",
             "已应用麦克风音源: " + settings.audioSource.id,
         )
+        return true
     }
 
     /** 状态变化回调，由 Activity 注册以驱动界面刷新。 */
