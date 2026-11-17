@@ -232,6 +232,18 @@ class MainActivity : ComponentActivity() {
                 showError(getString(R.string.permission_denied))
                 return
             }
+            // 防御：状态机说在录，但采集器其实已经空了。
+            // 这通常意味着上一轮的状态没同步，直接调用 stop 只会得到
+            // capture_not_recording 并弹出一个与用户操作无关的错误。
+            if (!viewModel.audioCapture.isRecording()) {
+                DiagnosticLog.w(
+                    "Main",
+                    "状态与采集实况不一致（state=RECORDING 但采集器空闲），已重置会话",
+                )
+                viewModel.cancelSession()
+                renderState(sessionController.state.value)
+                return
+            }
             stopRecordingAndProcess()
             return
         }
@@ -283,9 +295,13 @@ class MainActivity : ComponentActivity() {
 
     private fun stopRecordingAndProcess() {
         recordButton.isEnabled = false
-        renderState(SessionState.PROCESSING_RECOGNIZING)
 
         viewModel.stopRecordingAndProcess { outcome ->
+            // 一律按状态机的真实状态渲染，不用字面量。
+            // 曾经的写法在这里传 PROCESSING_RECOGNIZING，界面看着对，
+            // 但状态机若没同步就会停在 RECORDING，
+            // 用户再点一次按钮时又被当成"还在录音"去停止，弹出假的"录音失败"。
+            renderState(sessionController.state.value)
             recordButton.isEnabled = true
             when (outcome) {
                 is MainViewModel.RecognitionOutcome.Error -> {

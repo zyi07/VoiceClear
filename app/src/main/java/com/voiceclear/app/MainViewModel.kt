@@ -244,6 +244,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        // **必须先把状态机推离 RECORDING**，再停采集器。
+        // 状态机不允许 RECORDING 直跳 AWAITING_CONFIRMATION，
+        // 漏掉这一步会导致识别成功后状态仍停在 RECORDING：
+        // 界面看起来正常（按字面量渲染），但按钮再点一次时
+        // onRecordClicked 会认为「还在录音」，于是又调一次停止，
+        // 采集器已空 → capture_not_recording → 弹出误导性的「录音失败」。
+        sessionController.stopCapture()
+
         viewModelScope.launch {
             try {
 
@@ -330,6 +338,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         lastRecognition = recognition
                         sessionController.onRecognitionReady()
 
+                        // 识别一完成就投喂聚合器，**不等用户确认**。
+                        // 实测里用户常常「录一句、看一眼结果、接着录下一句」，
+                        // 从不点确认；若只在会话收尾时记录，聚合结果永远是空。
+                        // 合成/播放耗时待真正发生后再用 amendLast 回填。
+                        benchmarkAggregator.add(
+                            BenchmarkAggregator.Sample(
+                                captureMs = stageStart["capture"] ?: 0L,
+                                recognitionMs = recognitionMs,
+                                synthesisMs = 0L,
+                                playbackMs = 0L,
+                                totalMs = (stageStart["capture"] ?: 0L) + recognitionMs,
+                                audioMs = segment.durationMs,
+                            ),
+                        )
+
                         DiagnosticLog.i(
                             "Recognition",
                             "识别完成, 耗时=" + recognitionMs + "ms, 文本长度=" +
@@ -367,16 +390,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         metricsCollector.record(metrics)
 
-        // 同步投喂基准聚合器：单次记录用于日志，聚合结果用于版本/机型对比。
-        benchmarkAggregator.add(
-            BenchmarkAggregator.Sample(
-                captureMs = metrics.captureMs,
-                recognitionMs = metrics.recognitionMs,
-                synthesisMs = metrics.synthesisMs,
-                playbackMs = metrics.playbackMs,
-                totalMs = metrics.totalMs,
-                audioMs = lastCapturedSegment?.durationMs ?: 0L,
-            ),
+        // 会话收尾：把合成与播放耗时回填到识别时已记录的那条样本上，
+        // 避免同一次会话被统计两次。
+        benchmarkAggregator.amendLast(
+            synthesisMs = metrics.synthesisMs,
+            playbackMs = metrics.playbackMs,
+            totalMs = metrics.totalMs,
         )
 
         DiagnosticLog.i(

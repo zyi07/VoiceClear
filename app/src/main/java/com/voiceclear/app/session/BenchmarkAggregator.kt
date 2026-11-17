@@ -90,15 +90,19 @@ class BenchmarkAggregator(private val windowSize: Int = DEFAULT_WINDOW) {
                 return "{" + jsonPairText("note", "尚无样本") + "," +
                     jsonPairInt("windowSize", windowSize.toLong()) + "}"
             }
+            /** 阶段统计序列化；该阶段无数据时写 null，避免误读成 0 毫秒。 */
+            fun stage(key: String, stats: StageStats?): String =
+                QUOTE + key + QUOTE + ":" + (stats?.toJson() ?: "null")
+
             return "{" +
                 jsonPairInt("sampleCount", sampleCount.toLong()) + "," +
                 jsonPairInt("windowSize", windowSize.toLong()) + "," +
                 jsonPairDouble("medianRtf", medianRtf) + "," +
-                QUOTE + "capture" + QUOTE + ":" + capture!!.toJson() + "," +
-                QUOTE + "recognition" + QUOTE + ":" + recognition!!.toJson() + "," +
-                QUOTE + "synthesis" + QUOTE + ":" + synthesis!!.toJson() + "," +
-                QUOTE + "playback" + QUOTE + ":" + playback!!.toJson() + "," +
-                QUOTE + "total" + QUOTE + ":" + total!!.toJson() + "," +
+                stage("capture", capture) + "," +
+                stage("recognition", recognition) + "," +
+                stage("synthesis", synthesis) + "," +
+                stage("playback", playback) + "," +
+                stage("total", total) + "," +
                 jsonPairText("note", "仅耗时统计，不含识别准确率") +
                 "}"
         }
@@ -124,6 +128,27 @@ class BenchmarkAggregator(private val windowSize: Int = DEFAULT_WINDOW) {
         }
     }
 
+    /**
+     * 回填最近一条样本的合成与播放耗时。
+     *
+     * 识别完成时就已记录样本（保证未确认的会话也进统计），
+     * 合成与播放是之后才发生的，因此用回填而不是再 add 一条——
+     * 否则同一次会话会被统计两次。
+     *
+     * 无样本时静默返回：调用方可能在任何路径下收尾，不该因此抛异常。
+     */
+    @Synchronized
+    fun amendLast(synthesisMs: Long, playbackMs: Long, totalMs: Long) {
+        val last = samples.removeLastOrNull() ?: return
+        samples.addLast(
+            last.copy(
+                synthesisMs = if (synthesisMs > 0) synthesisMs else last.synthesisMs,
+                playbackMs = if (playbackMs > 0) playbackMs else last.playbackMs,
+                totalMs = if (totalMs > 0) totalMs else last.totalMs,
+            ),
+        )
+    }
+
     /** 清空所有样本。 */
     @Synchronized
     fun reset() {
@@ -142,11 +167,19 @@ class BenchmarkAggregator(private val windowSize: Int = DEFAULT_WINDOW) {
             windowSize = windowSize,
             capture = statsOf(samples.map { it.captureMs }),
             recognition = statsOf(samples.map { it.recognitionMs }),
-            synthesis = statsOf(samples.map { it.synthesisMs }),
-            playback = statsOf(samples.map { it.playbackMs }),
+            // 只统计真正走到该阶段的样本：未确认的会话合成/播放耗时是 0，
+            // 把它们算进去会让中位数被拉成 0，失去意义。
+            synthesis = statsOfOrNull(samples.map { it.synthesisMs }.filter { it > 0 }),
+            playback = statsOfOrNull(samples.map { it.playbackMs }.filter { it > 0 }),
             total = statsOf(samples.map { it.totalMs }),
             medianRtf = median(rtfs),
         )
+    }
+
+    /** 样本为空时返回 null，表示该阶段没有可用数据。 */
+    private fun statsOfOrNull(values: List<Long>): StageStats? {
+        if (values.isEmpty()) return null
+        return statsOf(values)
     }
 
     private fun statsOf(values: List<Long>): StageStats {
