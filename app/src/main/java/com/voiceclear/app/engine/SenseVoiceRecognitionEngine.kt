@@ -80,6 +80,15 @@ class SenseVoiceRecognitionEngine(
     private var recognizer: OfflineRecognizer? = null
     private var loadFailed = false
 
+    /**
+     * 上次加载是否因内存不足失败。
+     *
+     * 与普通加载失败区分：内存不足可以引导用户关闭后台应用后重试，
+     * 而模型文件损坏只能重新下载——两者的排障方向完全不同。
+     */
+    var outOfMemory: Boolean = false
+        private set
+
     override val engineId: String = ENGINE_ID
 
     override val capabilities: EngineCapabilities = EngineCapabilities(
@@ -98,6 +107,9 @@ class SenseVoiceRecognitionEngine(
 
     /** 模型目录。 */
     fun modelDir(): File = File(modelDirPath)
+
+    /** 模型文件字节数；文件缺失时返回 0。 */
+    fun modelBytes(): Long = File(modelDir(), MODEL_FILE).length()
 
     /**
      * 加载模型。加载较慢（数秒），应在后台线程调用。
@@ -144,10 +156,17 @@ class SenseVoiceRecognitionEngine(
             true
         } catch (error: Throwable) {
             loadFailed = true
-            DiagnosticLog.e(
-                "SenseVoice",
-                "模型加载失败: " + (error.message ?: error.javaClass.name),
-            )
+            // native 层分配失败（std::bad_alloc）到 Kotlin 侧表现为 OutOfMemoryError。
+            // 单独标记，便于上层给出「关闭其他应用后重试」而不是「重新下载模型」。
+            if (error is OutOfMemoryError) {
+                outOfMemory = true
+                DiagnosticLog.e("SenseVoice", "模型加载时内存不足（native 分配失败）")
+            } else {
+                DiagnosticLog.e(
+                    "SenseVoice",
+                    "模型加载失败: " + (error.message ?: error.javaClass.name),
+                )
+            }
             false
         }
     }

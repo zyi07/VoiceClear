@@ -113,6 +113,11 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
+                    benchmarkSummaryProvider =
+                        object : DiagnosticExporter.BenchmarkSummaryProvider {
+                            override fun exportBenchmarkSummary(): String =
+                                viewModel.benchmarkAggregator.snapshot().toJson()
+                        },
                 )
                 contentResolver.openOutputStream(uri)?.use { stream ->
                     stream.write(bytes)
@@ -207,6 +212,11 @@ class MainActivity : ComponentActivity() {
                 ),
             )
             setupButton.visibility = View.GONE
+        } else if (viewModel.engineIssue == ErrorCodes.ASR_INSUFFICIENT_MEMORY) {
+            // 内存不足时引导去下载页是错的——模型已经下载好了，缺的是内存。
+            // 这里给可行动的提示，并隐藏下载按钮。
+            statusView.setText(R.string.engine_memory_insufficient)
+            setupButton.visibility = View.GONE
         } else {
             statusView.setText(R.string.model_status_missing)
             setupButton.visibility = View.VISIBLE
@@ -231,7 +241,15 @@ class MainActivity : ComponentActivity() {
         }
         if (senseVoiceEngine == null) {
             // 模型未就绪时不启动录音，避免产出无法识别的无效音频。
-            DiagnosticLog.w("Main", "模型未就绪，阻止录音")
+            DiagnosticLog.w(
+                "Main",
+                "模型未就绪，阻止录音, 原因=" + (viewModel.engineIssue ?: "unknown"),
+            )
+            if (viewModel.engineIssue == ErrorCodes.ASR_INSUFFICIENT_MEMORY) {
+                // 模型齐备但内存不够：跳下载页没有意义，直接给出处理建议。
+                showError(getString(R.string.engine_memory_insufficient))
+                return
+            }
             showError(getString(R.string.engine_not_ready_warning))
             startActivity(android.content.Intent(this, ModelSetupActivity::class.java))
             return

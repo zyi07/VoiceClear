@@ -10,6 +10,7 @@ import com.voiceclear.app.engine.AudioFocusManager
 import com.voiceclear.app.engine.AudioPlayback
 import com.voiceclear.app.engine.AudioSegment
 import com.voiceclear.app.engine.FakeRecognitionEngine
+import com.voiceclear.app.engine.MemoryGuard
 import com.voiceclear.app.engine.ModelDownloadManager
 import com.voiceclear.app.engine.RecognitionEngine
 import com.voiceclear.app.engine.RecognitionEngineFactory
@@ -19,6 +20,7 @@ import com.voiceclear.app.engine.SenseVoiceRecognitionEngine
 import com.voiceclear.app.engine.SynthesisEngine
 import com.voiceclear.app.engine.SynthesisRequest
 import com.voiceclear.app.session.AppSettings
+import com.voiceclear.app.session.BenchmarkAggregator
 import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.ErrorCodes
 import com.voiceclear.app.session.MetricsCollector
@@ -88,6 +90,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 停止流程是否正在执行（防止双击导致并发停止）。 */
     private val stopInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /**
+     * 多轮性能基准聚合（审计 4.2）。
+     *
+     * 保留最近 50 次样本，导出中位数与 P95。
+     * 单次耗时会受温度与后台负载影响，拿单次数字做版本对比不可靠。
+     */
+    val benchmarkAggregator = BenchmarkAggregator()
+
+    /**
+     * 引擎不可用的原因（错误码）；null 表示正常。
+     *
+     * 单独暴露出来，界面才能区分数情况：内存不足 vs 模型缺失 vs 加载失败。
+     */
+    var engineIssue: String? = null
+        private set
+
     /** 最近一次采集的音频质量分析。 */
     var lastQuality: AudioQuality.Analysis? = null
         private set
@@ -127,22 +145,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val created = RecognitionEngineFactory.create(getApplication())
         if (created == null) {
             activeEngine = fallbackEngine
+            engineIssue = ErrorCodes.ASR_MODEL_MISSING
             DiagnosticLog.w("Main", "识别模型未就绪，当前为占位引擎（界面会提示）")
             return
         }
+
+        // **加载前先估算内存**（审计 4.1.2）。
+        // 239 MB 的模型由 native 层分配，不受 Java 堆上限约束，但受系统物理内存约束。
+        // 分配失败时进程会崩在 native 层，拿不到可读错误——所以先判一次，
+        // 不够就明确拒绝，把「闪退」变成「一句能看懂的提示」。
+        val assessment = MemoryGuard.assess(getApplication(), created.engine.modelBytes())
+        if (assessment.verdict == MemoryGuard.Verdict.INSUFFICIENT) {
+            activeEngine = fallbackEngine
+            engineIssue = ErrorCodes.ASR_INSUFFICIENT_MEMORY
+            DiagnosticLog.e("Main", "拒绝加载模型: " + assessment.describe())
+            return
+        }
+
         val loadStart = System.currentTimeMillis()
         val loaded = created.engine.load()
         modelLoadMs = System.currentTimeMillis() - loadStart
         if (loaded) {
             senseVoiceEngine = created.engine
             activeEngine = created.engine
+            engineIssue = null
             DiagnosticLog.i(
                 "Main",
                 "识别引擎就绪: " + created.engine.engineId + ", 加载耗时=" + modelLoadMs + "ms",
             )
+            if (assessment.verdict == MemoryGuard.Verdict.TIGHT) {
+                DiagnosticLog.w("Main", "内存偏紧但加载成功: " + assessment.describe())
+            }
         } else {
             activeEngine = fallbackEngine
-            DiagnosticLog.e("Main", "识别引擎加载失败")
+            // 区分「内存不足」与「模型损坏」：前者关掉后台应用可恢复，后者必须重新下载。
+            engineIssue = if (created.engine.outOfMemory) {
+                ErrorCodes.ASR_INSUFFICIENT_MEMORY
+            } else {
+                ErrorCodes.ASR_MODEL_LOAD_FAILED
+            }
+            DiagnosticLog.e(
+                "Main",
+                "识别引擎加载失败, code=" + engineIssue + ", 内存不足=" +
+                    created.engine.outOfMemory,
+            )
         }
     }
 
@@ -321,6 +367,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         metricsCollector.record(metrics)
 
+        // 同步投喂基准聚合器：单次记录用于日志，聚合结果用于版本/机型对比。
+        benchmarkAggregator.add(
+            BenchmarkAggregator.Sample(
+                captureMs = metrics.captureMs,
+                recognitionMs = metrics.recognitionMs,
+                synthesisMs = metrics.synthesisMs,
+                playbackMs = metrics.playbackMs,
+                totalMs = metrics.totalMs,
+                audioMs = lastCapturedSegment?.durationMs ?: 0L,
+            ),
+        )
+
         DiagnosticLog.i(
             "Metrics",
             "指标记录, outcome=" + metrics.outcome + ", total=" + metrics.totalMs +
@@ -477,6 +535,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
-        const val ENGINE_VERSION = "v0.7"
+        const val ENGINE_VERSION = "v0.11"
     }
 }

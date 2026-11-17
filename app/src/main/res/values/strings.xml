@@ -32,5 +32,6 @@
     <string name="audio_source_saved">已切换为：%1$s</string>
     <string name="audio_source_busy">正在录音，无法切换麦克风。请先停止录音再切换。</string>
     <string name="session_in_progress">上一次表达还没完成。请先点「确认」或「取消」，再开始新的录音。</string>
+    <string name="engine_memory_insufficient">可用内存不足，无法加载识别模型。请关闭其他后台应用后重新打开本应用。</string>
     <string name="recording_limit_reached">已达最长录音时间（30 秒），超出部分未被录入。</string>
 </resources>

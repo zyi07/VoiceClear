@@ -62,6 +62,15 @@ object ErrorCodes {
     /** 模型加载失败。不可重试。 */
     const val ASR_MODEL_LOAD_FAILED = "asr_model_load_failed"
 
+    /**
+     * 设备可用内存不足以装载模型。
+     *
+     * 与「模型加载失败」区分：这是**可以预判并规避**的情况。
+     * 提前判定可以给出「关闭其他应用后重试」这类可行动提示，
+     * 而不是让 native 层分配失败把进程带崩。
+     */
+    const val ASR_INSUFFICIENT_MEMORY = "asr_insufficient_memory"
+
     /** 解码失败。不可重试。 */
     const val ASR_DECODE_FAILED = "asr_decode_failed"
 
@@ -163,6 +172,7 @@ object ErrorCodes {
             CAPTURE_SILENT -> "麦克风没有收到声音"
             ASR_MODEL_MISSING -> "识别模型缺失"
             ASR_MODEL_LOAD_FAILED -> "识别模型加载失败"
+            ASR_INSUFFICIENT_MEMORY -> "设备可用内存不足，无法加载识别模型"
             ASR_DECODE_FAILED -> "识别解码失败"
             ASR_EMPTY_AUDIO -> "输入音频为空"
             ASR_SAMPLE_RATE_MISMATCH -> "采样率与模型要求不符"
