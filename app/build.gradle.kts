@@ -11,8 +11,8 @@ android {
         minSdk = 26
         targetSdk = 36
         // 每次交付递增：Android 用 versionCode 判断升级，一直是 1 会导致无法区分版本。
-        versionCode = 11
-        versionName = "0.11.0"
+        versionCode = 12
+        versionName = "0.11.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // 目标设备为华为/荣耀（ARM64），保留 arm64 与 armv7 以覆盖老机型。

@@ -119,12 +119,13 @@ class AudioCapture(
             DiagnosticLog.e("Capture", "getMinBufferSize 失败: " + minBuffer)
             return ERR_INVALID_BUFFER
         }
-        // 取最小缓冲的 2 倍（审计 4.1.1 要求说明依据）：
+        // 取最小缓冲的 4 倍（审计 4.1.1 要求说明依据）：
         // getMinBufferSize 返回的是「刚好不溢出」的临界值，等于它时
-        // 读线程稍有调度延迟就会丢帧（Overrun）。2 倍把可容忍延迟
-        // 从约 1 个读周期放宽到 2 个，代价只是约 16000*2*2/4 字节的内存，
-        // 相对 239 MB 的模型可以忽略。取更大倍数没有额外收益，
-        // 因为真正的瓶颈是读线程的调度，而不是缓冲深度。
+        // 读线程稍有调度延迟就会丢帧（Overrun）。
+        // 4 倍对应约 4 个读周期（16 kHz 单声道 16 位，约 80-120 ms）的容忍窗口，
+        // 足以覆盖普通的主线程抖动与 GC 停顿；
+        // 而多出的内存仅几百 KB，相对 239 MB 的模型可忽略。
+        // 再大也没有收益——真正的瓶颈是读线程能否被及时调度，不是缓冲深度。
         val bufferSize = minBuffer * BUFFER_SIZE_FACTOR
 
         val recorder = try {

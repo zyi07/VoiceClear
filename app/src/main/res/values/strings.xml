@@ -1,7 +1,9 @@
 <resources>
     <string name="app_name">VoiceClear</string>
     <string name="app_tagline">言语障碍语音表达助手</string>
-    <string name="btn_start">按住说话</string>
+    <!-- 实现是「点一下开始、再点一下停止」的两段式（见 AudioCapture 类注释），
+         原文案「按住说话」描述的是长按交互，与实际行为不符，会误导使用者。 -->
+    <string name="btn_start">开始录音</string>
     <string name="btn_stop">停止</string>
     <string name="btn_play_original">播放原始语音</string>
     <string name="btn_confirm">确认并播放</string>
