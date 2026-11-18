@@ -12,6 +12,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.button.MaterialButton
 import com.voiceclear.app.capture.CaptureActivity
 import com.voiceclear.app.engine.AudioCapture
@@ -183,7 +186,13 @@ class MainActivity : ComponentActivity() {
         cancelButton.setOnClickListener { onCancelClicked() }
         audioSettingsButton.setOnClickListener { showAudioSourceDialog() }
 
-        renderState(sessionController.state.value)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                sessionController.state.collect { state ->
+                    renderState(state)
+                }
+            }
+        }
     }
 
     /**
