@@ -5,36 +5,27 @@ import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
-import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.voiceclear.app.R
 import com.voiceclear.app.engine.AudioCapture
-import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.engine.AudioSegment
+import com.voiceclear.app.session.DiagnosticLog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * 采集模式界面。
- *
- * 流程：选择提示句 → 录音 → 质量检查 → （自发表达）意图确认 → 入库。
- *
- * 隐私与合规约束：
- * - 数据只写入应用私有目录，不联网；
- * - 导出仅含元数据，音频需单独授权；
- * - 每条片段带授权标记，未授权用途会被拒绝；
- * - 「清空采集数据」提供完整删除入口（撤回授权的实现基础）。
- */
+/** 研究采集界面。所有研究用途默认拒绝，只有用户逐项明确选择后才可录音和导出。 */
 class CaptureActivity : ComponentActivity() {
 
     private lateinit var store: CaptureStore
@@ -49,31 +40,32 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var statusText: TextView
     private lateinit var recordButton: MaterialButton
     private lateinit var promptButton: MaterialButton
+    private lateinit var spontaneousButton: MaterialButton
+    private lateinit var exportButton: MaterialButton
+    private lateinit var audioExportButton: MaterialButton
+    private lateinit var clearButton: MaterialButton
+    private lateinit var withdrawButton: MaterialButton
 
     private var prompts: List<CapturePrompt> = emptyList()
     private var speakerId: String = ""
+    private var captureBusy = false
+    private var stopping = false
+    private var captureJob: Job? = null
+    private var exportJob: Job? = null
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) {
-                performCapture()
-            } else {
-                statusText.setText(R.string.capture_permission_needed)
-            }
+            if (granted) performCapture() else statusText.setText(R.string.capture_permission_needed)
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_capture)
-
         store = CaptureStore(applicationContext)
         audioCapture = AudioCapture(applicationContext)
-
         speakerId = loadOrCreateSpeakerId()
-        controller = CaptureSessionController(
-            speakerId = speakerId,
-            sessionDate = currentDate(),
-        )
+        store.ensureConsent(speakerId)
+        controller = newController()
 
         speakerInfo = findViewById(R.id.captureSpeakerInfo)
         statsText = findViewById(R.id.captureStats)
@@ -83,19 +75,19 @@ class CaptureActivity : ComponentActivity() {
         statusText = findViewById(R.id.captureStatus)
         recordButton = findViewById(R.id.captureRecordButton)
         promptButton = findViewById(R.id.promptButton)
+        spontaneousButton = findViewById(R.id.captureSpontaneousButton)
+        exportButton = findViewById(R.id.captureExportButton)
+        audioExportButton = findViewById(R.id.captureAudioExportButton)
+        clearButton = findViewById(R.id.captureClearButton)
+        withdrawButton = findViewById(R.id.captureWithdrawButton)
 
-        findViewById<MaterialButton>(R.id.captureSpontaneousButton).setOnClickListener {
-            onSpontaneousRequested()
+        spontaneousButton.setOnClickListener { onSpontaneousRequested() }
+        exportButton.setOnClickListener { onExportClicked() }
+        audioExportButton.setOnClickListener {
+            if (!captureBusy) startActivity(android.content.Intent(this, AudioExportActivity::class.java))
         }
-        findViewById<MaterialButton>(R.id.captureExportButton).setOnClickListener {
-            onExportClicked()
-        }
-        findViewById<MaterialButton>(R.id.captureAudioExportButton).setOnClickListener {
-            startActivity(android.content.Intent(this, AudioExportActivity::class.java))
-        }
-        findViewById<MaterialButton>(R.id.captureClearButton).setOnClickListener {
-            onClearClicked()
-        }
+        clearButton.setOnClickListener { onClearClicked() }
+        withdrawButton.setOnClickListener { onWithdrawClicked() }
         promptButton.setOnClickListener { onPickPromptClicked() }
         recordButton.setOnClickListener { onRecordClicked() }
 
@@ -104,13 +96,16 @@ class CaptureActivity : ComponentActivity() {
         refresh()
     }
 
+    private fun newController() = CaptureSessionController(
+        speakerId = speakerId,
+        sessionDate = currentDate(),
+    )
+
     private fun loadPrompts(): List<CapturePrompt> {
         return try {
             val text = assets.open(PromptLibrary.ASSET_PATH).bufferedReader().use { it.readText() }
             val parsed = PromptLibrary.parse(text)
-            if (parsed.isEmpty()) {
-                statusText.setText(R.string.capture_no_prompts)
-            }
+            if (parsed.isEmpty()) statusText.setText(R.string.capture_no_prompts)
             parsed
         } catch (error: Exception) {
             statusText.setText(R.string.capture_no_prompts)
@@ -118,52 +113,55 @@ class CaptureActivity : ComponentActivity() {
         }
     }
 
-    /** 说话人 ID 为本地随机值，与个人身份无关，且跨会话保持一致。 */
     private fun loadOrCreateSpeakerId(): String {
         val prefs = getSharedPreferences("voiceclear_capture", MODE_PRIVATE)
         val existing = prefs.getString("speaker_id", null)
         if (existing != null) return existing
         val created = "spk_" + java.util.UUID.randomUUID().toString().take(8)
-        prefs.edit().putString("speaker_id", created).apply()
+        prefs.edit { putString("speaker_id", created) }
         return created
     }
 
-    private fun currentDate(): String {
-        return SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(Date())
-    }
+    private fun currentDate(): String = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(Date())
+
+    private fun currentTimestamp(): String =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
 
     private fun onPickPromptClicked() {
+        if (captureBusy) return
         if (prompts.isEmpty()) {
             statusText.setText(R.string.capture_no_prompts)
             return
         }
-        val grouped = PromptLibrary.groupByCategory(prompts)
-        val labels = grouped.entries.map { (category, items) ->
+        val categories = PromptLibrary.groupByCategory(prompts).entries.toList()
+        val labels = categories.map { (category, items) ->
             category + "（" + items.size + " 条）"
         }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle(R.string.capture_prompt_pick_title)
             .setItems(labels) { _, which ->
-                val category = grouped.keys.sorted()[which]
-                val items = grouped[category].orEmpty()
-                if (items.isEmpty()) return@setItems
-                showPromptList(items)
+                if (!captureBusy) showPromptList(categories[which].value)
             }
             .setNegativeButton(R.string.capture_cancel, null)
             .show()
     }
 
     private fun showPromptList(items: List<CapturePrompt>) {
+        if (captureBusy || items.isEmpty()) return
         val labels = items.map { it.text }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle(R.string.capture_prompt_pick_title)
             .setItems(labels) { _, which ->
+                if (captureBusy) return@setItems
                 controller.selectPrompt(items[which])
                 promptText.text = items[which].text
-                promptNote.text = items[which].note + "（" + items[which].id + "）"
+                promptNote.text = getString(
+                    R.string.capture_prompt_note,
+                    items[which].note,
+                    items[which].id,
+                )
                 promptText.visibility = View.VISIBLE
                 promptNote.visibility = View.VISIBLE
-                recordButton.isEnabled = true
                 statusText.setText(R.string.capture_status_idle)
                 refresh()
             }
@@ -172,14 +170,21 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun onSpontaneousRequested() {
-        controller.selectPrompt(null)  // 暂不支持，保留接口
+        if (captureBusy) return
+        controller.selectPrompt(null)
         promptText.visibility = View.GONE
         promptNote.visibility = View.GONE
-        recordButton.isEnabled = true
         statusText.setText(R.string.capture_status_idle)
+        refresh()
     }
 
     private fun onRecordClicked() {
+        // 停止是安全操作；即使录音期间权限被系统撤回，也不能用权限请求挡住停止。
+        if (controller.phase == CaptureSessionController.Phase.RECORDING) {
+            performCapture()
+            return
+        }
+        if (!ensureResearchConsent()) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -189,15 +194,65 @@ class CaptureActivity : ComponentActivity() {
         performCapture()
     }
 
-    /**
-     * 采集录音。两段式：第一次点击开始录音，第二次点击停止并入库。
-     *
-     * 早期实现是阻塞式一次性录满固定时长，用户无法控制何时结束，
-     * 导致录进去大量静音、识别结果为空。
-     */
+    /** 返回 true 表示已有明确研究授权；否则显示默认不勾选的授权设置。 */
+    private fun ensureResearchConsent(): Boolean {
+        if (store.hasResearchConsent(speakerId)) return true
+        val existing = store.readConsent(speakerId) ?: store.ensureConsent(speakerId)
+        if (existing.withdrawnAt != null) {
+            statusText.setText(R.string.capture_withdrawn)
+            return false
+        }
+        showConsentDialog(existing)
+        return false
+    }
+
+    private fun showConsentDialog(existing: CaptureConsent) {
+        val labels = arrayOf(
+            getString(R.string.consent_research_use),
+            getString(R.string.consent_train_use),
+            getString(R.string.consent_cloud_upload),
+            getString(R.string.consent_voice_profile),
+            getString(R.string.consent_anonymous_report),
+        )
+        val checked = BooleanArray(ConsentFlags.ALL.size) {
+            existing.grants[ConsentFlags.ALL[it]] == true
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.capture_consent_title)
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton(R.string.capture_consent_save) { _, _ ->
+                val grants = ConsentFlags.ALL.mapIndexed { index, key ->
+                    key to checked[index]
+                }.toMap()
+                val anyGranted = grants.any { it.value }
+                val signedAt = when {
+                    existing.signedAt.isNotBlank() -> existing.signedAt
+                    anyGranted -> currentTimestamp()
+                    else -> ""
+                }
+                store.writeConsent(existing.copy(grants = grants, signedAt = signedAt))
+                statusText.setText(
+                    if (grants[ConsentFlags.RESEARCH_USE] == true) {
+                        R.string.capture_status_idle
+                    } else {
+                        R.string.capture_consent_needed
+                    },
+                )
+                refresh()
+            }
+            .setNegativeButton(R.string.capture_cancel, null)
+            .show()
+    }
+
     private fun performCapture() {
-        if (audioCapture.isRecording()) {
+        if (controller.phase == CaptureSessionController.Phase.RECORDING) {
             stopCapture()
+            return
+        }
+        if (!store.hasResearchConsent(speakerId)) {
+            statusText.setText(R.string.capture_consent_needed)
             return
         }
         startCapture()
@@ -207,73 +262,77 @@ class CaptureActivity : ComponentActivity() {
         controller.startRecording()
         val failure = audioCapture.start(controller.sessionId)
         if (failure != null) {
+            controller.rollbackRecordingStart()
+            captureBusy = false
             DiagnosticLog.e("Capture", "录音启动失败, code=" + failure)
-            statusText.setText(R.string.capture_permission_needed)
+            statusText.setText(R.string.capture_start_failed)
+            refresh()
             return
         }
+        captureBusy = true
+        stopping = false
         statusText.setText(R.string.capture_status_recording)
-        recordButton.setText(R.string.capture_stop)
+        refresh()
         DiagnosticLog.i("Capture", "录音已开始")
     }
 
     private fun stopCapture() {
-        recordButton.isEnabled = false
-
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                audioCapture.stop()
-            }
-            recordButton.isEnabled = true
-            recordButton.setText(R.string.capture_record)
-
+        stopping = true
+        refresh()
+        captureJob = lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { audioCapture.stop() }
+            captureBusy = false
+            stopping = false
             when (result) {
                 is AudioCapture.CaptureResult.Failure -> {
+                    controller.rollbackRecordingStart()
                     DiagnosticLog.e("Capture", "采集失败, code=" + result.code)
-                    statusText.setText(R.string.capture_permission_needed)
+                    statusText.setText(R.string.capture_start_failed)
                 }
-
-                is AudioCapture.CaptureResult.Success -> {
-                    DiagnosticLog.i(
-                        "Capture",
-                        "采集成功, 时长=" + result.segment.durationMs + "ms, 采样率=" +
-                            result.segment.sampleRate + ", 质量标记=" + result.segment.qualityFlags,
-                    )
-                    onCaptured(result.segment)
-                }
+                is AudioCapture.CaptureResult.Success -> onCaptured(result.segment)
             }
+            refresh()
         }
     }
 
     private fun onCaptured(segment: AudioSegment) {
-        val qualityFlags = segment.qualityFlags
+        val consentFlags = store.activeConsentFlags(speakerId)
+        if (ConsentFlags.RESEARCH_USE !in consentFlags) {
+            controller.rollbackRecordingStart()
+            statusText.setText(R.string.capture_consent_needed)
+            return
+        }
         val saved = controller.submitSegment(
             durationMs = segment.durationMs,
             sampleRate = segment.sampleRate,
-            qualityFlags = qualityFlags,
+            qualityFlags = segment.qualityFlags,
             intendedText = null,
             confirmed = false,
             fatigueLevel = null,
-            environment = "quiet",
-            consentFlags = ConsentFlags.ALL,
+            environment = "unspecified",
+            consentFlags = consentFlags,
         )
-
-        store.saveAudio(controller.sessionId, saved.segmentId, segment.samples)
+        try {
+            store.saveSegment(controller.sessionId, saved, segment.samples)
+        } catch (error: Exception) {
+            controller.discardSegment(saved.segmentId)
+            statusText.setText(R.string.capture_save_failed)
+            DiagnosticLog.e("Capture", "片段入库失败: " + error.message)
+            return
+        }
         DiagnosticLog.i(
             "Capture",
             "片段已入库, id=" + saved.segmentId + ", 场景=" + saved.scene.value +
                 ", 参考来源=" + saved.referenceSource.value,
         )
-
         if (controller.hasPendingIntent()) {
             statusText.setText(R.string.capture_status_intent_needed)
             showIntentDialog()
         } else {
             statusText.setText(R.string.capture_status_saved)
         }
-        refresh()
     }
 
-    /** 自发表达需要用户确认「我本来想说的是」，否则该片段不计入正确率统计。 */
     private fun showIntentDialog() {
         val input = EditText(this)
         input.hint = getString(R.string.capture_intent_hint)
@@ -281,114 +340,67 @@ class CaptureActivity : ComponentActivity() {
             .setTitle(R.string.capture_intent_title)
             .setView(input)
             .setPositiveButton(R.string.capture_intent_confirm) { _, _ ->
-                val text = input.text?.toString().orEmpty()
-                if (text.isNotBlank()) {
-                    controller.confirmIntent(text)
+                val updated = controller.confirmIntent(input.text?.toString().orEmpty())
+                if (updated != null) {
+                    store.upsertTranscript(controller.sessionId, updated)
                     statusText.setText(R.string.capture_status_saved)
                 }
-                persistPendingSegments()
                 refresh()
             }
             .setNegativeButton(R.string.capture_intent_skip) { _, _ ->
                 statusText.setText(R.string.capture_status_intent_needed)
-                persistPendingSegments()
                 refresh()
             }
             .show()
     }
 
-    /** 把已采集片段写入本地数据集目录。 */
-    private fun persistPendingSegments() {
-        for (segment in controller.collectedSegments()) {
-            store.appendTranscript(controller.sessionId, segment)
+    private fun onExportClicked() {
+        if (captureBusy || exportJob?.isActive == true) return
+        exportButton.isEnabled = false
+        exportJob = lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { store.exportMetadata() } }
+            if (result.isSuccess) {
+                val stats = store.statistics()
+                DiagnosticLog.i("Capture", "元数据已导出, 有效片段数=" + stats.segments)
+                AlertDialog.Builder(this@CaptureActivity)
+                    .setTitle(R.string.capture_export_title)
+                    .setMessage(R.string.capture_export_message)
+                    .setPositiveButton(R.string.capture_confirm, null)
+                    .show()
+            } else {
+                DiagnosticLog.e("Capture", "元数据导出失败: " + result.exceptionOrNull()?.message)
+                statusText.setText(R.string.capture_export_failed)
+            }
+            refresh()
         }
     }
 
-    private fun onExportClicked() {
-        persistPendingSegments()
-        val stats = store.statistics()
-        val manifest = CaptureManifest(
-            datasetVersion = "v0.1.0",
-            createdAt = currentDate(),
-            cohortTarget = "听障相关发音不清的普通话成人",
-            speakers = listOf(
-                ManifestSpeakerEntry(
-                    speakerId = speakerId,
-                    severityLevel = "L2",
-                    sessions = 1,
-                    segments = stats.segments,
-                ),
-            ),
-            splits = mapOf("train" to listOf(speakerId), "dev" to emptyList(), "test" to emptyList()),
-            totals = ManifestTotals(
-                speakers = 1,
-                sessions = 1,
-                segments = stats.segments,
-                hours = stats.totalHours,
-            ),
-            annotationGuideVersion = CaptureStore.GUIDELINE_VERSION,
-            licenseCode = "internal-research-only",
-            commercialUse = false,
-            redistribution = false,
-            limitations = listOf(
-                "样本量极小，任何统计结论仅作探索性观察",
-                "严重度分层由顾问判定，App 内不自评",
-                "尚未跨会话稳定性数据",
-            ),
-        )
-        store.writeManifest(manifest)
-        store.writeSplit("train", listOf(speakerId))
-        store.writeSplit("dev", emptyList())
-        store.writeSplit("test", emptyList())
-        store.writeConsent(
-            CaptureConsent(
-                speakerId = speakerId,
-                consentVersion = "v1.0",
-                signedAt = currentDate(),
-                grants = mapOf(
-                    ConsentFlags.RESEARCH_USE to true,
-                    ConsentFlags.TRAIN_USE to true,
-                    ConsentFlags.CLOUD_UPLOAD to false,
-                    ConsentFlags.VOICE_PROFILE to false,
-                    ConsentFlags.ANONYMOUS_REPORT to true,
-                ),
-                withdrawnAt = null,
-                withdrawalScopeNote = "撤回后不再用于后续训练；已进入全局模型的部分无法保证移除",
-                compensation = "pending",
-            ),
-        )
-        store.writeSpeaker(
-            CaptureSpeaker(
-                speakerId = speakerId,
-                ageBand = "unspecified",
-                gender = "unspecified",
-                severityLevel = "L2",
-                hearingAidWorn = false,
-                hearingAidType = null,
-                firstSessionDate = currentDate(),
-                sessionCount = 1,
-                speakingEnvironment = listOf("quiet"),
-            ),
-        )
-        store.exportMetadata()
-        DiagnosticLog.i("Capture", "数据集已导出, 片段数=" + stats.segments)
+    private fun onWithdrawClicked() {
+        if (captureBusy) return
         AlertDialog.Builder(this)
-            .setTitle(R.string.capture_export_title)
-            .setMessage(R.string.capture_export_message)
-            .setPositiveButton(R.string.capture_confirm, null)
+            .setTitle(R.string.capture_withdraw_title)
+            .setMessage(R.string.capture_withdraw_message)
+            .setPositiveButton(R.string.capture_confirm) { _, _ ->
+                store.withdrawResearchData(speakerId, currentTimestamp())
+                controller = newController()
+                promptText.visibility = View.GONE
+                promptNote.visibility = View.GONE
+                statusText.setText(R.string.capture_withdrawn)
+                refresh()
+            }
+            .setNegativeButton(R.string.capture_cancel, null)
             .show()
     }
 
     private fun onClearClicked() {
+        if (captureBusy) return
         AlertDialog.Builder(this)
             .setTitle(R.string.capture_clear_title)
             .setMessage(R.string.capture_clear_message)
             .setPositiveButton(R.string.capture_confirm) { _, _ ->
                 store.clearAll()
-                controller = CaptureSessionController(
-                    speakerId = speakerId,
-                    sessionDate = currentDate(),
-                )
+                store.ensureConsent(speakerId)
+                controller = newController()
                 statusText.setText(R.string.capture_status_idle)
                 refresh()
             }
@@ -405,8 +417,31 @@ class CaptureActivity : ComponentActivity() {
             String.format(Locale.CHINA, "%.1f 小时", stats.totalHours),
         )
         guidanceText.text = controller.guidanceNote()
+        val withdrawn = store.readConsent(speakerId)?.withdrawnAt != null
+        val selectable = controller.phase == CaptureSessionController.Phase.PROMPT_SELECTED ||
+            controller.phase == CaptureSessionController.Phase.SAVED
+        recordButton.isEnabled = when {
+            stopping -> false
+            controller.phase == CaptureSessionController.Phase.RECORDING -> true
+            else -> !captureBusy && selectable && !withdrawn
+        }
+        recordButton.setText(
+            if (controller.phase == CaptureSessionController.Phase.RECORDING) {
+                R.string.capture_stop
+            } else {
+                R.string.capture_record
+            },
+        )
+        listOf(promptButton, spontaneousButton, exportButton, audioExportButton, clearButton, withdrawButton)
+            .forEach { it.isEnabled = !captureBusy }
     }
 
-    /** 会话 ID，供入库流水线关联片段。 */
+    override fun onDestroy() {
+        captureJob?.cancel()
+        exportJob?.cancel()
+        audioCapture.cancel()
+        super.onDestroy()
+    }
+
     val currentSessionId: String get() = controller.sessionId
 }

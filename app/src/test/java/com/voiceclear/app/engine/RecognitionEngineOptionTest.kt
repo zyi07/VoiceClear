@@ -13,10 +13,10 @@ class RecognitionEngineOptionTest {
     }
 
     @Test
-    fun `real engines are evaluable`() {
-        assertTrue(RecognitionEngineOption.SYSTEM.isEvaluable)
-        assertTrue(RecognitionEngineOption.ONNX_OFFLINE.isEvaluable)
-        assertTrue(RecognitionEngineOption.PERSONALIZED.isEvaluable)
+    fun `unimplemented or future engines are not evaluable`() {
+        assertFalse(RecognitionEngineOption.SYSTEM.isEvaluable)
+        assertFalse(RecognitionEngineOption.ONNX_OFFLINE.isEvaluable)
+        assertFalse(RecognitionEngineOption.PERSONALIZED.isEvaluable)
     }
 
     @Test
@@ -48,13 +48,13 @@ class RecognitionEngineOptionTest {
     }
 
     @Test
-    fun `real engine keeps original outcome`() {
+    fun `placeholder engine outcome flags missing evaluable engine`() {
         val metrics = com.voiceclear.app.session.SessionMetrics(
             sessionId = "s1",
             outcome = com.voiceclear.app.session.SessionMetrics.OUTCOME_SUCCESS,
         )
         assertEquals(
-            com.voiceclear.app.session.SessionMetrics.OUTCOME_SUCCESS,
+            "evaluable_engine_missing",
             RecognitionEngineOption.ONNX_OFFLINE.outcomeTag(metrics),
         )
     }

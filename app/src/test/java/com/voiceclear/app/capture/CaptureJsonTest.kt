@@ -53,7 +53,7 @@ class CaptureJsonTest {
             "segmentId", "sessionId", "speakerId", "sessionDate", "scene", "promptId",
             "referenceText", "referenceSource", "intendedText", "durationMs", "sampleRate",
             "channels", "encoding", "deviceModel", "environment", "qualityFlags",
-            "annotatorId", "guideVersion", "consentFlags",
+            "annotatorId", "guideVersion", "consentFlags", "audioFileName", "audioAvailable",
         )
         for (field in required) {
             assertTrue("缺少字段: " + field, json.has(field))
@@ -133,6 +133,7 @@ class CaptureJsonTest {
             ageBand = "30-39",
             gender = "female",
             severityLevel = "L2",
+            severitySource = CaptureSpeaker.SEVERITY_SOURCE_ADVISOR,
             hearingAidWorn = true,
             hearingAidType = "behind_the_ear",
             firstSessionDate = "2026-11-20",

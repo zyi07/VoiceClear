@@ -95,6 +95,32 @@ class BenchmarkAmendTest {
     }
 
     @Test
+    fun `amend only updates the matching session`() {
+        val aggregator = BenchmarkAggregator()
+        aggregator.add(recognitionOnly(100L).copy(sessionId = "session-a"))
+        aggregator.add(recognitionOnly(200L).copy(sessionId = "session-b"))
+
+        assertTrue(aggregator.amend("session-a", 300L, 400L, 870L))
+
+        val json = aggregator.snapshot().toJson()
+        assertTrue(json.contains(Char(34).toString() + "sampleCount" + Char(34).toString() + ":2"))
+        // session-b 不得被 A 的收尾修改；只有一条样本进入合成/播放统计。
+        assertEquals(1, aggregator.snapshot().synthesis!!.count)
+        assertEquals(300L, aggregator.snapshot().synthesis!!.medianMs)
+        assertEquals(200L, aggregator.snapshot().recognition!!.maxMs)
+    }
+
+    @Test
+    fun `amend rejects unknown session`() {
+        val aggregator = BenchmarkAggregator()
+        aggregator.add(recognitionOnly(100L).copy(sessionId = "session-a"))
+        org.junit.Assert.assertFalse(
+            aggregator.amend("session-b", 300L, 400L, 870L),
+        )
+        assertNull(aggregator.snapshot().synthesis)
+    }
+
+    @Test
     fun `mixed sessions only count reached stages`() {
         val aggregator = BenchmarkAggregator();
         // 两条只到识别，一条走完全程

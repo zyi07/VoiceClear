@@ -19,7 +19,7 @@ enum class SessionState {
     ;
 
     val isTerminal: Boolean
-        get() = this == COMPLETED || this == CANCELLED
+        get() = this == COMPLETED || this == CANCELLED || this == ERROR
 
     val isBusy: Boolean
         get() = this == RECORDING ||

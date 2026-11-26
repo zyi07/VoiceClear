@@ -2,8 +2,8 @@
 
 面向**言语障碍者**的安卓端语音表达辅助应用：让发音不清的用户用**自己的声音**把话说清楚。
 
-> 当前状态：**P1/P2 工程基线**。已具备可构建、可测试的应用骨架与完整技术方案；
-> **尚无真实识别质量结论**（识别链路仍为假引擎），详见下文「诚实的边界」。
+> 当前状态：**P1/P2 工程原型**。已接入真实端侧 SenseVoice ASR，具备主流程、研究采集与诊断工具链；
+> **尚无目标人群识别质量结论，研究采集与导出仍需端到端及真机验收**，详见下文「诚实的边界」。
 
 ## 目标人群
 
@@ -18,6 +18,8 @@
 | [可行性研究与技术指导](docs/VoiceClear-Android-feasibility-and-development-guide.md) | 技术选型、架构、数据与隐私治理、评测体系、风险登记、P0–P5 计划 |
 | [目标人群数据采集协议](docs/target-cohort-data-collection-protocol.md) | 严重度分层、意图基准确认、防泄漏划分、伦理与合规阻塞项 |
 | [开发日志](DEVLOG.md) | 每轮实现要点与三道门槛验证结果 |
+| [2026-11-26 全量审查](CODE_REVIEW_2026-11-26.md) / [整改记录](CODE_REVIEW_REMEDIATION_2026-11-26.md) | 原问题证据、逐项整改与未完成的设备门槛 |
+| [本轮 API 验证表](docs/api-verification-2026-11-26.md) | minSdk/targetSdk、API 来源与 AudioTrack 排空语义 |
 
 ## 技术路线
 
@@ -46,7 +48,8 @@ app/src/main/java/com/voiceclear/app/
 ├── engine/                      # 引擎适配层
 │   ├── RecognitionEngine.kt     #   识别能力契约（离线/置信度/麦克风占用/音色）
 │   ├── RecognitionEngineOption.kt #  引擎选型策略
-│   ├── OnnxOfflineRecognitionEngine.kt # 端侧离线接入层（模型待集成）
+│   ├── SenseVoiceRecognitionEngine.kt # 真实端侧 SenseVoice ASR
+│   ├── OnnxOfflineRecognitionEngine.kt # 旧通用 ONNX 占位适配器（不可评测）
 │   ├── AndroidTtsEngine.kt      #   原生 TTS 合成（通用声音基线）
 │   ├── AudioCapture.kt          #   麦克风采集（含权限失败路径）
 │   ├── AudioPlayback.kt         #   播放控制
@@ -114,27 +117,28 @@ adb logcat -v threadtime -s VoiceClear:V > voiceclear-log.txt   # 实时
 ./gradlew :app:assembleDebug          # 构建
 ./gradlew :app:checkApkPermissions     # APK 权限门禁（缺权限则构建失败）
 ./gradlew :app:checkAsrConfig         # 识别参数对照门禁（与官方 sherpa-onnx 一致性）
-./gradlew :app:testDebugUnitTest      # 单元测试（65 项）
+./gradlew :app:testDebugUnitTest --rerun-tasks  # 强制重跑 Android 单元测试
 ./gradlew :app:lintDebug              # 静态检查
-python3 tools/test_tools.py           # 工具测试（15 项）
+python3 -m unittest tools.test_tools -v  # Python 工具测试
 ```
 
 三道验证门槛：
 
 | 门槛 | 状态 |
 |---|---|
-| Gate 1 静态检查 | 通过，**0 个 Error** |
-| Gate 2 完整构建 | 通过，debug/release APK 均产出 |
-| Gate 3 运行验证 | 58 项测试全部通过（Robolectric 框架级）；**真机验证进行中** |
+| Gate 1 静态检查 | 以本轮 `lintDebug` 实际输出为准 |
+| Gate 2 完整构建 | 以本轮 debug/release 构建实际输出为准 |
+| Gate 3 运行验证 | **真机/模拟器验收未完成**；Robolectric 不能替代设备验证 |
 
-> Gate 3 说明：本仓库在无 KVM 的 aarch64 环境中开发，模拟器不可用，故用
-> Robolectric（真实 Android 框架语义）验证。音频路由、来电中断、蓝牙断连、
-> 连续会话温升与延迟仍需在真机上测量。
+> Gate 3 说明：当前开发环境无可用 KVM/设备时，只能运行 JVM 与 Robolectric 测试。
+> 音频路由、来电中断、蓝牙断连、PCM/TTS 停止、旋转、SAF、连续会话温升与延迟
+> 仍需按真机手册逐项测量并留存截图/日志。
 
 ## 诚实的边界
 
-- **无真实识别质量结论**：识别使用假引擎。真实中文 ASR 的接入需先解决模型分发方式、
-  许可证核查，以及在目标人群上与通用 ASR 的对照。
+- **真实 ASR 已接入，但无目标人群质量结论**：主流程使用端侧 SenseVoice；
+  占位 Fake 引擎只用于测试和能力展示，不得在模型未就绪时冒充真实识别。
+  模型分发、完整性校验和目标人群对照必须分别验收。
 - **未做真机验证**：APK 已交付待测，见 [测试指引](docs/apk-testing-guide.md)。
 - **识别准确率未在目标人群上实测**：SenseVoice 公开基准 AISHELL-1 CER 7.81%，
   但那是普通说话人数据。目标人群（听障相关发音不清）的真实准确率**尚无数据**，
@@ -149,4 +153,5 @@ python3 tools/test_tools.py           # 工具测试（15 项）
 - 尚未选定发布许可，待产品阶段确定。
 - 数据处理涉及敏感个人信息与医疗健康信息，
   须遵守《中华人民共和国个人信息保护法》第 28、29、31、47、55、56 条的适用要求。
-- 语音、声纹与障碍类别按高敏感资产处理：最小化采集、本地优先、可撤回可删除。
+- 语音、声纹与障碍类别按高敏感资产处理：最小化采集、本地优先、逐项授权、可撤回可删除。
+- 研究采集实现不等于合规验收完成；实际采集前仍须完成伦理审查、真实授权流程和端到端撤回验证。

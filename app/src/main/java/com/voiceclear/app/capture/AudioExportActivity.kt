@@ -2,38 +2,33 @@ package com.voiceclear.app.capture
 
 import android.app.AlertDialog
 import android.os.Bundle
-import android.view.View
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.button.MaterialButton
 import com.voiceclear.app.R
 import com.voiceclear.app.session.DiagnosticLog
-import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.Locale
 
-/**
- * 音频导出界面。
- *
- * 音频属于生物特征信息，导出必须走**显式授权**：
- * - 页面明确说明将要导出什么、包含哪些片段；
- * - 用户确认后才写入；
- * - 写入目标由系统文件选择器决定，不指定路径。
- *
- * 音频以原始 PCM 形式导出，不做降噪或重采样，保持采集原始状态。
- */
+/** 导出完整 ZIP 数据集；每段 PCM 独立保存，绝不拼接成无边界文件。 */
 class AudioExportActivity : ComponentActivity() {
 
     private lateinit var store: CaptureStore
     private lateinit var statusText: TextView
     private lateinit var summaryText: TextView
-
-    /** 待导出的目标文件（由系统选择器返回）。 */
+    private lateinit var exportButton: MaterialButton
     private var exportTarget: android.net.Uri? = null
+    private var exportJob: Job? = null
 
     private val createFileLauncher =
-        registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
             if (uri == null) {
-                DiagnosticLog.i("Export", "用户取消了音频导出")
+                DiagnosticLog.i("Export", "用户取消了数据集导出")
                 return@registerForActivityResult
             }
             exportTarget = uri
@@ -43,34 +38,32 @@ class AudioExportActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_audio_export)
-
         store = CaptureStore(applicationContext)
         statusText = findViewById(R.id.exportStatus)
         summaryText = findViewById(R.id.exportSummary)
+        exportButton = findViewById(R.id.exportAudioButton)
+        exportButton.setOnClickListener { onExportClicked() }
+        findViewById<MaterialButton>(R.id.exportBackButton).setOnClickListener { finish() }
+        refreshSummary()
+        statusText.setText(R.string.export_audio_ready)
+    }
 
-        findViewById<MaterialButton>(R.id.exportAudioButton).setOnClickListener {
-            onExportClicked()
-        }
-        findViewById<MaterialButton>(R.id.exportBackButton).setOnClickListener {
-            finish()
-        }
-
+    private fun refreshSummary() {
         val stats = store.statistics()
         summaryText.text = getString(
             R.string.export_audio_summary,
             stats.segments,
-            String.format(java.util.Locale.CHINA, "%.1f", stats.totalHours),
+            String.format(Locale.CHINA, "%.1f", stats.totalHours),
         )
-        statusText.setText(R.string.export_audio_ready)
     }
 
     private fun onExportClicked() {
+        if (exportJob?.isActive == true) return
         val stats = store.statistics()
         if (stats.segments == 0) {
             statusText.setText(R.string.export_audio_empty)
             return
         }
-        // 二次确认：音频是生物特征，导出必须是显式决定。
         AlertDialog.Builder(this)
             .setTitle(R.string.export_audio_confirm_title)
             .setMessage(
@@ -78,8 +71,8 @@ class AudioExportActivity : ComponentActivity() {
                     "\n\n" + getString(R.string.export_audio_privacy_note),
             )
             .setPositiveButton(R.string.export_audio_confirm) { _, _ ->
-                DiagnosticLog.i("Export", "用户确认导出音频, 片段数=" + stats.segments)
-                createFileLauncher.launch("voiceclear-audio.pcm")
+                DiagnosticLog.i("Export", "用户确认导出数据集, 有效片段数=" + stats.segments)
+                createFileLauncher.launch("voiceclear-dataset.zip")
             }
             .setNegativeButton(R.string.capture_cancel, null)
             .show()
@@ -87,30 +80,37 @@ class AudioExportActivity : ComponentActivity() {
 
     private fun performExport() {
         val uri = exportTarget ?: return
-        var written = 0
-        var bytes = 0L
-
-        val result = runCatching {
-            contentResolver.openOutputStream(uri)?.use { stream ->
-                val segmentsRoot = File(store.root(), CaptureStore.SEGMENTS_DIR)
-                segmentsRoot.listFiles()?.forEach { sessionDir ->
-                    sessionDir.listFiles()?.forEach { audioFile ->
-                        val content = audioFile.readBytes()
-                        stream.write(content)
-                        bytes += content.size
-                        written++
-                    }
+        exportButton.isEnabled = false
+        exportJob = lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val stream = contentResolver.openOutputStream(uri) ?: error("无法打开输出流")
+                    stream.use { store.writeDatasetZip(it) }
                 }
-            } ?: error("无法打开输出流")
+            }
+            if (result.isSuccess) {
+                val summary = result.getOrThrow()
+                DiagnosticLog.i(
+                    "Export",
+                    "数据集导出完成, 片段=" + summary.segments + ", 音频字节=" + summary.audioBytes,
+                )
+                statusText.text = if (summary.segments > 0) {
+                    getString(R.string.export_audio_done, summary.segments, summary.audioBytes / 1024)
+                } else {
+                    getString(R.string.export_audio_empty)
+                }
+            } else {
+                val message = result.exceptionOrNull()?.message ?: "未知错误"
+                DiagnosticLog.e("Export", "数据集导出失败: " + message)
+                statusText.setText(R.string.export_audio_failed)
+            }
+            exportButton.isEnabled = true
+            refreshSummary()
         }
+    }
 
-        if (result.isSuccess) {
-            DiagnosticLog.i("Export", "音频导出完成, 文件数=" + written + ", 字节=" + bytes)
-            statusText.setText(getString(R.string.export_audio_done, written, bytes / 1024))
-        } else {
-            val message = result.exceptionOrNull()?.message ?: "未知错误"
-            DiagnosticLog.e("Export", "音频导出失败: " + message)
-            statusText.setText(R.string.export_audio_failed)
-        }
+    override fun onDestroy() {
+        exportJob?.cancel()
+        super.onDestroy()
     }
 }

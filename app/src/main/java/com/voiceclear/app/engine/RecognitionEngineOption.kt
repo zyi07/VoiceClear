@@ -73,17 +73,19 @@ enum class RecognitionEngineOption(
 
     ;
 
-    /** 是否可用于真实质量评估。 */
+    /**
+     * 是否已有真实实现、可用于质量评估。
+     * 当前旧选型中 SYSTEM/ONNX_OFFLINE 均无可用识别实现，PERSONALIZED 是未来方案；
+     * 真实 SenseVoice 由独立引擎与 ENGINE_ID 接入，不借这些占位选项冒充实测能力。
+     */
     val isEvaluable: Boolean
-        get() = this != FAKE
+        get() = false
 
     /** 是否适合作为首版默认：离线、不占用麦克风。 */
     val isFirstReleaseCandidate: Boolean
         get() = this == ONNX_OFFLINE
 
     /** 该方案在结果统计中应使用的 outcome 标记。 */
-    fun outcomeTag(metrics: SessionMetrics): String = when (this) {
-        FAKE -> "evaluable_engine_missing"
-        else -> metrics.outcome
-    }
+    fun outcomeTag(metrics: SessionMetrics): String =
+        if (isEvaluable) metrics.outcome else "evaluable_engine_missing"
 }

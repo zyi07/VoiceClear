@@ -11,6 +11,18 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+internal data class SenseVoiceNativeResult(val text: String, val lang: String)
+
+/** native 生命周期测试缝；decode 内部仍负责释放每次识别的 stream。 */
+internal interface SenseVoiceNativeAdapter {
+    fun decode(samples: FloatArray, sampleRate: Int): SenseVoiceNativeResult
+    fun release()
+}
+
+internal fun interface SenseVoiceNativeFactory {
+    fun create(config: OfflineRecognizerConfig): SenseVoiceNativeAdapter
+}
+
 /**
  * 端侧离线中文识别引擎（sherpa-onnx + SenseVoice）。
  *
@@ -37,9 +49,31 @@ import java.nio.ByteOrder
  * 因此本引擎返回的 confidence 恒为 null，上层不得把它当作高置信度自动放行；
  * 内容安全需依赖「用户确认文本」这一交互，而不是置信度阈值。
  */
-class SenseVoiceRecognitionEngine(
+class SenseVoiceRecognitionEngine internal constructor(
     private val modelDirPath: String,
+    private val nativeFactory: SenseVoiceNativeFactory,
 ) : RecognitionEngine {
+    constructor(modelDirPath: String) : this(
+        modelDirPath,
+        SenseVoiceNativeFactory { config ->
+            val recognizer = OfflineRecognizer(null, config)
+            object : SenseVoiceNativeAdapter {
+                override fun decode(samples: FloatArray, sampleRate: Int): SenseVoiceNativeResult {
+                    val stream = recognizer.createStream()
+                    return try {
+                        stream.acceptWaveform(samples, sampleRate)
+                        recognizer.decode(stream)
+                        val result = recognizer.getResult(stream)
+                        SenseVoiceNativeResult(result.text, result.lang)
+                    } finally {
+                        stream.release()
+                    }
+                }
+
+                override fun release() = recognizer.release()
+            }
+        },
+    )
 
     companion object {
         const val ENGINE_ID = "sherpa-sensevoice-zh"
@@ -75,9 +109,13 @@ class SenseVoiceRecognitionEngine(
         const val ERR_MODEL_LOAD_FAILED = ErrorCodes.ASR_MODEL_LOAD_FAILED
         const val ERR_DECODE_FAILED = ErrorCodes.ASR_DECODE_FAILED
         const val ERR_EMPTY_AUDIO = ErrorCodes.ASR_EMPTY_AUDIO
+        const val ERR_SAMPLE_RATE_MISMATCH = ErrorCodes.ASR_SAMPLE_RATE_MISMATCH
+        const val ERR_CHANNEL_COUNT_MISMATCH = "asr_channel_count_mismatch"
+        const val ERR_INVALID_PCM16 = "asr_invalid_pcm16"
     }
 
-    private var recognizer: OfflineRecognizer? = null
+    private val engineLock = Any()
+    private var recognizer: SenseVoiceNativeAdapter? = null
     private var loadFailed = false
 
     /**
@@ -114,7 +152,9 @@ class SenseVoiceRecognitionEngine(
     /**
      * 加载模型。加载较慢（数秒），应在后台线程调用。
      */
-    fun load(): Boolean {
+    fun load(): Boolean = synchronized(engineLock) { loadLocked() }
+
+    private fun loadLocked(): Boolean {
         if (recognizer != null) return true
         if (loadFailed) return false
         if (!isModelReady()) {
@@ -148,7 +188,7 @@ class SenseVoiceRecognitionEngine(
                 decodingMethod = "greedy_search",
             )
 
-            recognizer = OfflineRecognizer(null, config)
+            recognizer = nativeFactory.create(config)
             DiagnosticLog.i(
                 "SenseVoice",
                 "模型加载成功, 模型=" + modelPath + ", 词表=" + tokensPath,
@@ -171,80 +211,76 @@ class SenseVoiceRecognitionEngine(
         }
     }
 
-    override suspend fun recognize(request: RecognitionRequest): RecognitionResult {
+    /** decode 全程持锁；release 会等待它完成，绝不并发释放 native recognizer。 */
+    override suspend fun recognize(request: RecognitionRequest): RecognitionResult =
+        synchronized(engineLock) { recognizeLocked(request) }
+
+    private fun recognizeLocked(request: RecognitionRequest): RecognitionResult {
         val engine = recognizer
         if (engine == null) {
-            return RecognitionResult(
-                sessionId = request.sessionId,
-                rawText = "",
-                normalizedText = "",
-                confidence = null,
-                warnings = listOf(ERR_MODEL_LOAD_FAILED),
+            return failure(
+                request.sessionId,
+                if (isModelReady()) ERR_MODEL_LOAD_FAILED else ERR_MODEL_MISSING,
             )
         }
 
+        validateAudio(request.audio)?.let { code -> return failure(request.sessionId, code) }
         val samples = pcm16ToFloat(request.audio.samples, request.audio.sampleRate)
-        if (samples.isEmpty()) {
-            return RecognitionResult(
-                sessionId = request.sessionId,
-                rawText = "",
-                normalizedText = "",
-                confidence = null,
-                warnings = listOf(ERR_EMPTY_AUDIO),
-            )
-        }
 
         return try {
-            val stream = engine.createStream()
-            try {
-                stream.acceptWaveform(samples, request.audio.sampleRate)
-                engine.decode(stream)
-                val result = engine.getResult(stream)
-                val rawText = result.text.trim()
-
-                // SenseVoice 输出带语言/情绪标签（如 <|zh|><|NEUTRAL|>文本），
-                // 这里只取可读文本部分，避免把标签透传给用户。
-                val cleanText = stripTags(rawText)
-
-                // 记录音频能量：用于区分「没录到声音」与「录到了但识别不出」。
-                val (rms, peak) = audioEnergy(samples)
-                DiagnosticLog.i(
-                    "SenseVoice",
-                    "识别完成, 语言=" + result.lang + ", 文本长度=" + cleanText.length +
-                        ", 音频时长=" + (samples.size * 1000L / SAMPLE_RATE) + "ms" +
-                        ", RMS=" + String.format(java.util.Locale.US, "%.4f", rms) +
-                        ", 峰值=" + String.format(java.util.Locale.US, "%.4f", peak),
-                )
-                RecognitionResult(
-                    sessionId = request.sessionId,
-                    rawText = rawText,
-                    normalizedText = cleanText,
-                    // SenseVoice 不提供置信度，必须返回 null 而不是编造数值。
-                    confidence = null,
-                    warnings = emptyList(),
-                )
-            } finally {
-                stream.release()
-            }
+            val result = engine.decode(samples, request.audio.sampleRate)
+            val rawText = result.text.trim()
+            val cleanText = stripTags(rawText)
+            val (rms, peak) = audioEnergy(samples)
+            DiagnosticLog.i(
+                "SenseVoice",
+                "识别完成, 语言=" + result.lang + ", 文本长度=" + cleanText.length +
+                    ", 音频时长=" + (samples.size * 1000L / SAMPLE_RATE) + "ms" +
+                    ", RMS=" + String.format(java.util.Locale.US, "%.4f", rms) +
+                    ", 峰值=" + String.format(java.util.Locale.US, "%.4f", peak),
+            )
+            RecognitionResult(
+                sessionId = request.sessionId,
+                rawText = rawText,
+                normalizedText = cleanText,
+                confidence = null,
+                warnings = emptyList(),
+                errorCode = null,
+            )
         } catch (error: Throwable) {
             DiagnosticLog.e(
                 "SenseVoice",
                 "解码失败: " + (error.message ?: error.javaClass.name),
             )
-            RecognitionResult(
-                sessionId = request.sessionId,
-                rawText = "",
-                normalizedText = "",
-                confidence = null,
-                warnings = listOf(ERR_DECODE_FAILED),
-            )
+            failure(request.sessionId, ERR_DECODE_FAILED)
         }
     }
 
-    /** 释放 native 资源。 */
-    fun release() {
+    /** 主层可直接检查 errorCode/isSuccess，不再需要从 warnings 猜测是否成功。 */
+    private fun failure(sessionId: String, code: String): RecognitionResult = RecognitionResult(
+        sessionId = sessionId,
+        rawText = "",
+        normalizedText = "",
+        confidence = null,
+        warnings = listOf(code),
+        errorCode = code,
+    )
+
+    /** 独立校验输入格式，避免把采样率/声道/PCM 错误误报成空音频。 */
+    internal fun validateAudio(audio: AudioSegment): String? = when {
+        audio.sampleRate != SAMPLE_RATE -> ERR_SAMPLE_RATE_MISMATCH
+        audio.channelCount != 1 -> ERR_CHANNEL_COUNT_MISMATCH
+        audio.samples.isEmpty() -> ERR_EMPTY_AUDIO
+        audio.samples.size % 2 != 0 -> ERR_INVALID_PCM16
+        else -> null
+    }
+
+    /** 等待进行中的 decode 完成后释放 native 资源；可安全重复调用。 */
+    fun release() = synchronized(engineLock) {
         runCatching { recognizer?.release() }
         recognizer = null
+        loadFailed = false
+        outOfMemory = false
     }
 
     /**

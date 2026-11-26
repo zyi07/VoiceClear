@@ -14,6 +14,7 @@ import com.voiceclear.app.engine.SynthesisRequest
 import com.voiceclear.app.session.SessionController
 import com.voiceclear.app.session.SessionState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -67,13 +68,16 @@ class AndroidRuntimeBehaviorTest {
     }
 
     @Test
-    fun `session controller rejects stale results under real coroutines`() {
-        val controller = SessionController()
+    fun `session controller rejects late result after cancellation with same id`() {
+        val controller = SessionController(idGenerator = { "fixed-id" })
         controller.startSession()
-        val sessionId = controller.sessionId
-        assertNotNull(sessionId)
-        assertTrue(controller.isCurrent(sessionId!!))
-        assertTrue(controller.isCurrent(sessionId))
+        val token = controller.currentToken()
+        assertNotNull(token)
+        assertTrue(controller.stopCapture(token!!))
+        assertTrue(controller.cancel(token))
+        assertFalse(controller.isCurrent(token))
+        assertFalse(controller.isCurrent(token.sessionId, token.generation))
+        assertFalse(controller.onRecognitionReady(token))
     }
 
     @Test

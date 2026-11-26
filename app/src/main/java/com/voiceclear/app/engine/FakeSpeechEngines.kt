@@ -9,7 +9,7 @@ import kotlinx.coroutines.delay
  */
 class FakeRecognitionEngine(
     private val resultText: String = "今天下午三点医院复诊",
-    private val confidence: Float? = 0.82f,
+    private val confidence: Float? = null,
     private val latencyMs: Long = 120,
 ) : RecognitionEngine {
     override val engineId: String = RecognitionEngineOption.FAKE.engineId
@@ -52,7 +52,8 @@ class FakeSynthesisEngine(
                 durationMs = 400,
                 samples = ByteArray(estimatedSamples * 2),
             ),
-            durationMs = latencyMs,
+            // 与 audio.durationMs 同口径，避免 400 ms 音频却报告 80 ms。
+            durationMs = 400,
         )
     }
 }

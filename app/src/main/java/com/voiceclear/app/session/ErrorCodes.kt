@@ -54,6 +54,12 @@ object ErrorCodes {
      */
     const val CAPTURE_SILENT = "capture_silent"
 
+    /** AudioRecord.read 返回错误；截断音频不得送识别。 */
+    const val CAPTURE_READ_FAILED = "capture_read_failed"
+
+    /** 采集线程未在停止期限内退出。 */
+    const val CAPTURE_JOIN_TIMEOUT = "capture_join_timeout"
+
     // ---------- 识别（ASR） ----------
 
     /** 模型文件缺失。不可重试，需先下载模型。 */
@@ -80,6 +86,12 @@ object ErrorCodes {
     /** 采样率与模型要求不符。不可重试，需修采集配置。 */
     const val ASR_SAMPLE_RATE_MISMATCH = "asr_sample_rate_mismatch"
 
+    /** 声道数与模型要求不符。 */
+    const val ASR_CHANNEL_COUNT_MISMATCH = "asr_channel_count_mismatch"
+
+    /** PCM16 字节长度或格式非法。 */
+    const val ASR_INVALID_PCM16 = "asr_invalid_pcm16"
+
     /** 模型不可用（旧引擎保留）。 */
     const val ASR_MODEL_NOT_AVAILABLE = "asr_model_not_available"
 
@@ -105,6 +117,12 @@ object ErrorCodes {
 
     /** 引擎初始化超时。可重试。 */
     const val TTS_INIT_TIMEOUT = "tts_init_timeout"
+
+    /** 用户取消或焦点抢占导致系统 TTS 停止。 */
+    const val TTS_STOPPED = "tts_stopped"
+
+    /** TTS 已随 ViewModel 销毁，不能继续发声。 */
+    const val TTS_RELEASED = "tts_released"
 
     // ---------- 音频焦点 ----------
 
@@ -154,6 +172,7 @@ object ErrorCodes {
      * 取下划线前的第一段作为域。
      */
     fun domain(code: String): String {
+        if (code.startsWith("audio_focus_")) return "focus"
         val separator = code.indexOf('_')
         return if (separator > 0) code.substring(0, separator) else "unknown"
     }
@@ -170,12 +189,16 @@ object ErrorCodes {
             CAPTURE_EMPTY -> "没有采集到音频"
             CAPTURE_TOO_SHORT -> "录音过短"
             CAPTURE_SILENT -> "麦克风没有收到声音"
+            CAPTURE_READ_FAILED -> "麦克风读取失败，音频未送识别"
+            CAPTURE_JOIN_TIMEOUT -> "录音线程停止超时，已按失败处理"
             ASR_MODEL_MISSING -> "识别模型缺失"
             ASR_MODEL_LOAD_FAILED -> "识别模型加载失败"
             ASR_INSUFFICIENT_MEMORY -> "设备可用内存不足，无法加载识别模型"
             ASR_DECODE_FAILED -> "识别解码失败"
             ASR_EMPTY_AUDIO -> "输入音频为空"
             ASR_SAMPLE_RATE_MISMATCH -> "采样率与模型要求不符"
+            ASR_CHANNEL_COUNT_MISMATCH -> "声道数与模型要求不符"
+            ASR_INVALID_PCM16 -> "PCM16 音频格式非法"
             ASR_MODEL_NOT_AVAILABLE -> "识别模型不可用"
             ASR_MODEL_INVALID -> "识别模型非法"
             TTS_NOT_READY -> "语音合成引擎未就绪"
@@ -184,6 +207,8 @@ object ErrorCodes {
             TTS_UTTERANCE_ERROR -> "朗读过程出错"
             TTS_SYNTHESIS_TIMEOUT -> "合成超时"
             TTS_INIT_TIMEOUT -> "合成引擎初始化超时"
+            TTS_STOPPED -> "语音合成已停止"
+            TTS_RELEASED -> "语音合成引擎已释放"
             FOCUS_DENIED -> "未取得音频焦点"
             MODEL_DOWNLOAD_FAILED -> "模型下载失败"
             MODEL_SOURCE_UNREACHABLE -> "下载源不可达"

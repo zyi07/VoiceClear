@@ -13,7 +13,7 @@ import com.voiceclear.app.session.DiagnosticLog
  * 2. **尽早安装崩溃处理器**——放在这里比放在 Activity 里更早，
  *    能捕获到 Activity 创建阶段发生的崩溃。
  */
-class VoiceClearApplication : Application() {
+open class VoiceClearApplication : Application() {
 
     companion object {
         /** 进程创建时刻（elapsedRealtime 基准）。 */
@@ -38,16 +38,11 @@ class VoiceClearApplication : Application() {
         // 尽早安装崩溃处理器。
         CrashHandler(this).install()
 
-        // 数据保留策略在进程级执行一次（而非每次 Activity 重建都跑）：
-        // 旋转屏幕会反复触发 Activity.onCreate，把清理放在那里既重复又在主线程做 IO。
-        // 这里放到后台线程，避免拖慢启动。
-        java.util.concurrent.Executors.newSingleThreadExecutor().execute {
-            runCatching {
-                val result = com.voiceclear.app.capture.DataRetentionPolicy(this).enforce()
-                if (!result.disabled && result.deletedFiles > 0) {
-                    DiagnosticLog.i("Retention", "启动清理: " + result.describe())
-                }
-            }
-        }
+        // 数据保留策略在进程级执行一次；测试应用可覆盖此入口，禁止后台任务与用例竞争。
+        scheduleRetentionCleanup()
+    }
+
+    protected open fun scheduleRetentionCleanup() {
+        com.voiceclear.app.capture.CaptureRetentionScheduler(this).enqueue()
     }
 }

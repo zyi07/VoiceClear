@@ -36,7 +36,11 @@ data class CaptureSegment(
     val annotatorId: String,
     val guideVersion: String,
     val consentFlags: List<String>,
+    /** 相对于数据集根目录的逐段音频路径。 */
     val audioFileName: String,
+    /** 保留策略删除音频后置为 false；记录保留作审计，但不再计入有效数据。 */
+    val audioAvailable: Boolean = true,
+    val deletionReason: String? = null,
 )
 
 /** 场景类型，对应 schema 的 scene 字段。 */
@@ -66,7 +70,8 @@ object ConsentFlags {
     const val VOICE_PROFILE = "voice_profile"
     const val ANONYMOUS_REPORT = "anonymous_report"
 
-    val ALL = listOf(RESEARCH_USE, TRAIN_USE, ANONYMOUS_REPORT)
+    /** 全部已知用途仅用于渲染选项；绝不代表默认授权。 */
+    val ALL = listOf(RESEARCH_USE, TRAIN_USE, CLOUD_UPLOAD, VOICE_PROFILE, ANONYMOUS_REPORT)
 }
 
 /** 说话人元数据。 */
@@ -75,7 +80,7 @@ data class CaptureSpeaker(
     val ageBand: String,
     val gender: String,
     val severityLevel: String,
-    val severitySource: String = SEVERITY_SOURCE_ADVISOR,
+    val severitySource: String = SEVERITY_SOURCE_UNSPECIFIED,
     val hearingAidWorn: Boolean,
     val hearingAidType: String?,
     val firstSessionDate: String,
@@ -84,6 +89,8 @@ data class CaptureSpeaker(
 ) {
     companion object {
         const val SEVERITY_SOURCE_ADVISOR = "professional_advisor"
+        const val SEVERITY_SOURCE_UNSPECIFIED = "unspecified"
+        const val SEVERITY_LEVEL_UNSPECIFIED = "unspecified"
 
         /** 严重度合法取值。 */
         val SEVERITY_LEVELS = listOf("L1", "L2", "L3")

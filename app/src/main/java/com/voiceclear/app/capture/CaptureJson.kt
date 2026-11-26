@@ -3,7 +3,7 @@ package com.voiceclear.app.capture
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** 授权记录。 */
+/** 授权记录。signedAt 为空表示从未签署；withdrawnAt 非空时所有用途均失效。 */
 data class CaptureConsent(
     val speakerId: String,
     val consentVersion: String,
@@ -26,7 +26,6 @@ data class CaptureManifest(
     val licenseCode: String,
     val commercialUse: Boolean,
     val redistribution: Boolean,
-    /** 数据集自述局限，强制项：避免下游误用小样本结论。 */
     val limitations: List<String>,
 )
 
@@ -44,7 +43,6 @@ data class ManifestTotals(
     val hours: Double,
 )
 
-/** 采集统计。 */
 data class CaptureStatistics(
     val segments: Int,
     val totalMs: Long,
@@ -52,23 +50,23 @@ data class CaptureStatistics(
     val totalHours: Double get() = totalMs / 3_600_000.0
 }
 
-/**
- * 采集数据的 JSON 序列化。
- *
- * 单独成文件，便于用纯 JVM 单元测试验证输出格式与校验工具兼容，
- * 不必启动 Android 运行时。
- *
- * 注意：Android 的 org.json.JSONObject.put 声明为抛 JSONException，
- * 因此这里统一用 runCatching 包裹，避免每个调用点都写 try/catch。
- */
+/** 采集 JSON 序列化与读取。序列化失败会显式抛出，不能静默丢失授权或关联字段。 */
 object CaptureJson {
 
-    /** 写入一个键值，忽略异常（键名与值均来自内部常量或受控模型）。 */
     private fun JSONObject.putSafe(key: String, value: Any?) {
-        runCatching { put(key, value) }
+        put(key, value)
     }
 
-    /** 片段记录。字段名与 schema 严格一致。 */
+    private fun JSONObject.nullableString(key: String): String? {
+        return if (!has(key) || isNull(key)) null else getString(key)
+    }
+
+    private fun JSONArray.stringList(): List<String> {
+        return buildList {
+            for (index in 0 until length()) add(getString(index))
+        }
+    }
+
     fun segmentToJson(segment: CaptureSegment): JSONObject {
         val json = JSONObject()
         json.putSafe("segmentId", segment.segmentId)
@@ -93,15 +91,66 @@ object CaptureJson {
         json.putSafe("annotatorId", segment.annotatorId)
         json.putSafe("guideVersion", segment.guideVersion)
         json.putSafe("consentFlags", JSONArray(segment.consentFlags))
+        json.putSafe("audioFileName", segment.audioFileName)
+        json.putSafe("audioAvailable", segment.audioAvailable)
+        json.putSafe("deletionReason", segment.deletionReason ?: JSONObject.NULL)
         return json
     }
 
-    /** 授权记录。 */
+    fun segmentFromJson(json: JSONObject): CaptureSegment {
+        val scene = CaptureScene.entries.firstOrNull { it.value == json.getString("scene") }
+            ?: throw IllegalArgumentException("未知 scene")
+        val source = ReferenceSource.entries.firstOrNull {
+            it.value == json.getString("referenceSource")
+        } ?: throw IllegalArgumentException("未知 referenceSource")
+        val segmentId = json.getString("segmentId")
+        val sessionId = json.getString("sessionId")
+        val storedAudioPath = json.optString("audioFileName", "")
+        val audioPath = when {
+            storedAudioPath.isBlank() -> "segments/$sessionId/$segmentId.pcm"
+            !storedAudioPath.contains('/') -> "segments/$sessionId/$storedAudioPath"
+            else -> storedAudioPath
+        }
+        return CaptureSegment(
+            segmentId = segmentId,
+            sessionId = sessionId,
+            speakerId = json.getString("speakerId"),
+            sessionDate = json.getString("sessionDate"),
+            scene = scene,
+            promptId = json.nullableString("promptId"),
+            referenceText = json.optString("referenceText", ""),
+            referenceSource = source,
+            intendedText = json.nullableString("intendedText"),
+            durationMs = json.optLong("durationMs", 0L),
+            sampleRate = json.optInt("sampleRate", 0),
+            channels = json.optInt("channels", 1),
+            encoding = json.optString("encoding", "pcm_s16"),
+            noiseEstimateDb = if (json.has("noiseEstimateDb") && !json.isNull("noiseEstimateDb")) {
+                json.getDouble("noiseEstimateDb")
+            } else {
+                null
+            },
+            distanceRange = json.nullableString("distanceRange"),
+            fatigueLevel = if (json.has("fatigueLevel") && !json.isNull("fatigueLevel")) {
+                json.getInt("fatigueLevel")
+            } else {
+                null
+            },
+            deviceModel = json.optString("deviceModel", "unknown"),
+            environment = json.optString("environment", "unspecified"),
+            qualityFlags = json.optJSONArray("qualityFlags")?.stringList().orEmpty(),
+            annotatorId = json.optString("annotatorId", CaptureStore.ANNOTATOR_ID),
+            guideVersion = json.optString("guideVersion", CaptureStore.GUIDELINE_VERSION),
+            consentFlags = json.optJSONArray("consentFlags")?.stringList().orEmpty(),
+            audioFileName = audioPath,
+            audioAvailable = json.optBoolean("audioAvailable", true),
+            deletionReason = json.nullableString("deletionReason"),
+        )
+    }
+
     fun consentToJson(consent: CaptureConsent): JSONObject {
         val grantsJson = JSONObject()
-        for ((key, value) in consent.grants) {
-            grantsJson.putSafe(key, value)
-        }
+        for ((key, value) in consent.grants) grantsJson.putSafe(key, value)
         val json = JSONObject()
         json.putSafe("speakerId", consent.speakerId)
         json.putSafe("consentVersion", consent.consentVersion)
@@ -113,12 +162,29 @@ object CaptureJson {
         return json
     }
 
-    /** 说话人元数据。 */
+    fun consentFromJson(json: JSONObject): CaptureConsent {
+        val grantsJson = json.optJSONObject("grants") ?: JSONObject()
+        val grants = mutableMapOf<String, Boolean>()
+        val keys = grantsJson.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            grants[key] = grantsJson.optBoolean(key, false)
+        }
+        return CaptureConsent(
+            speakerId = json.getString("speakerId"),
+            consentVersion = json.optString("consentVersion", "v1.0"),
+            signedAt = json.optString("signedAt", ""),
+            grants = grants,
+            withdrawnAt = json.nullableString("withdrawnAt"),
+            withdrawalScopeNote = json.optString("withdrawalScopeNote", ""),
+            compensation = json.optString("compensation", "unspecified"),
+        )
+    }
+
     fun speakerToJson(speaker: CaptureSpeaker): JSONObject {
         val hearingAid = JSONObject()
         hearingAid.putSafe("worn", speaker.hearingAidWorn)
         hearingAid.putSafe("type", speaker.hearingAidType ?: JSONObject.NULL)
-
         val json = JSONObject()
         json.putSafe("speakerId", speaker.speakerId)
         json.putSafe("ageBand", speaker.ageBand)
@@ -132,7 +198,28 @@ object CaptureJson {
         return json
     }
 
-    /** 数据集清单。 */
+    fun speakerFromJson(json: JSONObject): CaptureSpeaker {
+        val hearingAid = json.optJSONObject("hearingAid")
+        return CaptureSpeaker(
+            speakerId = json.getString("speakerId"),
+            ageBand = json.optString("ageBand", "unspecified"),
+            gender = json.optString("gender", "unspecified"),
+            severityLevel = json.optString(
+                "severityLevel",
+                CaptureSpeaker.SEVERITY_LEVEL_UNSPECIFIED,
+            ),
+            severitySource = json.optString(
+                "severitySource",
+                CaptureSpeaker.SEVERITY_SOURCE_UNSPECIFIED,
+            ),
+            hearingAidWorn = hearingAid?.optBoolean("worn", false) ?: false,
+            hearingAidType = hearingAid?.nullableString("type"),
+            firstSessionDate = json.optString("firstSessionDate", ""),
+            sessionCount = json.optInt("sessionCount", 0),
+            speakingEnvironment = json.optJSONArray("speakingEnvironment")?.stringList().orEmpty(),
+        )
+    }
+
     fun manifestToJson(manifest: CaptureManifest): JSONObject {
         val speakerArray = JSONArray()
         for (entry in manifest.speakers) {
@@ -143,27 +230,20 @@ object CaptureJson {
             item.putSafe("segments", entry.segments)
             speakerArray.put(item)
         }
-
         val splitsJson = JSONObject()
-        for ((name, members) in manifest.splits) {
-            splitsJson.putSafe(name, JSONArray(members))
-        }
-
+        for ((name, members) in manifest.splits) splitsJson.putSafe(name, JSONArray(members))
         val licenseJson = JSONObject()
         licenseJson.putSafe("code", manifest.licenseCode)
         licenseJson.putSafe("commercialUse", manifest.commercialUse)
         licenseJson.putSafe("redistribution", manifest.redistribution)
-
         val totalsJson = JSONObject()
         totalsJson.putSafe("speakers", manifest.totals.speakers)
         totalsJson.putSafe("sessions", manifest.totals.sessions)
         totalsJson.putSafe("segments", manifest.totals.segments)
         totalsJson.putSafe("hours", manifest.totals.hours)
-
         val cohortJson = JSONObject()
         cohortJson.putSafe("target", manifest.cohortTarget)
         cohortJson.putSafe("minSdk", 26)
-
         val json = JSONObject()
         json.putSafe("datasetVersion", manifest.datasetVersion)
         json.putSafe("createdAt", manifest.createdAt)

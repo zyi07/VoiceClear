@@ -24,7 +24,15 @@ data class RecognitionResult(
     /** null 表示该引擎未提供可靠置信度，禁止当作高置信度使用。 */
     val confidence: Float?,
     val warnings: List<String> = emptyList(),
-)
+    /**
+     * 明确的失败码；非空时主层必须映射为 RecognitionOutcome.Error。
+     * 与可容忍的 warning 分开，避免主层把空文本失败当成识别成功。
+     */
+    val errorCode: String? = null,
+) {
+    val isSuccess: Boolean
+        get() = errorCode == null
+}
 
 data class SynthesisRequest(
     val sessionId: String,

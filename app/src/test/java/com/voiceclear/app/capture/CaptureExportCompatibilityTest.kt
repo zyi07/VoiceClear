@@ -1,5 +1,7 @@
 package com.voiceclear.app.capture
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -16,10 +18,11 @@ import java.nio.charset.StandardCharsets
  * [tools/validate_dataset.py] 直接接受，否则采集的数据无法进入评测流水线。
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [34], application = CaptureRetentionTestApplication::class)
 class CaptureExportCompatibilityTest {
 
-    private val projectRoot: File = File(System.getProperty("user.dir")).parentFile
+    private val projectRoot: File = File(System.getProperty("user.dir") ?: ".").parentFile
+        ?: File(".").absoluteFile
 
     private val validatorScript: File = File(projectRoot, "tools/validate_dataset.py")
 
@@ -52,6 +55,7 @@ class CaptureExportCompatibilityTest {
             ageBand = "30-39",
             gender = "female",
             severityLevel = "L2",
+            severitySource = CaptureSpeaker.SEVERITY_SOURCE_ADVISOR,
             hearingAidWorn = true,
             hearingAidType = null,
             firstSessionDate = "2026-11-20",
@@ -88,6 +92,9 @@ class CaptureExportCompatibilityTest {
         )
         File(dir, "transcripts/ses_001.jsonl").writeText(
             CaptureJson.segmentToJson(segment).toString() + "\n", StandardCharsets.UTF_8)
+        File(dir, "segments/ses_001").mkdirs()
+        // 1500 ms、16 kHz、单声道 PCM16 = 48000 字节，供校验器交叉核验时长。
+        File(dir, "segments/ses_001/seg_001.pcm").writeBytes(ByteArray(48_000))
 
         File(dir, "splits/train.txt").writeText("spk_001\n", StandardCharsets.UTF_8)
         File(dir, "splits/dev.txt").writeText("", StandardCharsets.UTF_8)
@@ -125,6 +132,93 @@ class CaptureExportCompatibilityTest {
             assertTrue("校验器输出: " + output, output.contains("校验通过"))
         } finally {
             tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun productionStoreExportPassesPythonValidator() {
+        if (!validatorScript.exists()) return
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = CaptureStore(context)
+        store.clearAll()
+        val tempDir = createTempDataset()
+        try {
+            store.writeConsent(
+                CaptureConsent(
+                    speakerId = "spk_001",
+                    consentVersion = "v1.0",
+                    signedAt = "2026-11-20T10:00:00+08:00",
+                    grants = ConsentFlags.ALL.associateWith { it == ConsentFlags.RESEARCH_USE },
+                    withdrawnAt = null,
+                    withdrawalScopeNote = "note",
+                    compensation = "unspecified",
+                ),
+            )
+            val segment = CaptureSegment(
+                segmentId = "seg_001",
+                sessionId = "ses_001",
+                speakerId = "spk_001",
+                sessionDate = "2026-11-20",
+                scene = CaptureScene.READ,
+                promptId = "P0001",
+                referenceText = "今天天气不错。",
+                referenceSource = ReferenceSource.APPROVED_PROMPT,
+                intendedText = null,
+                durationMs = 1500,
+                sampleRate = 16000,
+                channels = 1,
+                encoding = "pcm_s16",
+                noiseEstimateDb = null,
+                distanceRange = null,
+                fatigueLevel = null,
+                deviceModel = "test",
+                environment = "unspecified",
+                qualityFlags = emptyList(),
+                annotatorId = "self",
+                guideVersion = "v1.0",
+                consentFlags = listOf(ConsentFlags.RESEARCH_USE),
+                audioFileName = CaptureStore.audioRelativePath("ses_001", "seg_001"),
+            )
+            store.saveSegment(segment.sessionId, segment, ByteArray(48_000))
+
+            // 默认导出没有专业严重度，必须明确失败；不得靠测试静默填 L2 掩盖缺口。
+            store.exportAudio(tempDir)
+            val unclassifiedProcess = ProcessBuilder(
+                "python3", validatorScript.absolutePath, tempDir.absolutePath,
+            ).redirectErrorStream(true).start()
+            val unclassifiedOutput = unclassifiedProcess.inputStream.bufferedReader().use { it.readText() }
+            val unclassifiedExit = unclassifiedProcess.waitFor()
+            assertTrue("unspecified 默认导出不得成为正式研究集: " + unclassifiedOutput, unclassifiedExit != 0)
+            assertTrue(unclassifiedOutput.contains("unspecified"))
+
+            // 显式补录真实专业顾问记录后，同一生产导出才允许通过。
+            store.writeSpeaker(
+                CaptureSpeaker(
+                    speakerId = "spk_001",
+                    ageBand = "unspecified",
+                    gender = "unspecified",
+                    severityLevel = "L2",
+                    severitySource = CaptureSpeaker.SEVERITY_SOURCE_ADVISOR,
+                    hearingAidWorn = false,
+                    hearingAidType = null,
+                    firstSessionDate = "2026-11-20",
+                    sessionCount = 1,
+                    speakingEnvironment = listOf("unspecified"),
+                ),
+            )
+
+            store.exportAudio(tempDir)
+            val process = ProcessBuilder(
+                "python3", validatorScript.absolutePath, tempDir.absolutePath,
+            ).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+            assertEquals("生产导出校验失败: " + output, 0, exitCode)
+            assertTrue(output.contains("校验通过"))
+            assertTrue(File(tempDir, "prompts/prompts.json").isFile)
+        } finally {
+            tempDir.deleteRecursively()
+            store.clearAll()
         }
     }
 

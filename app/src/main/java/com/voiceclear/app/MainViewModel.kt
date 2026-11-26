@@ -5,10 +5,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.voiceclear.app.engine.AndroidTtsEngine
 import com.voiceclear.app.engine.AudioCapture
-import com.voiceclear.app.engine.AudioQuality
 import com.voiceclear.app.engine.AudioFocusManager
 import com.voiceclear.app.engine.AudioPlayback
+import com.voiceclear.app.engine.AudioQuality
 import com.voiceclear.app.engine.AudioSegment
+import com.voiceclear.app.engine.AudioSourceOption
 import com.voiceclear.app.engine.FakeRecognitionEngine
 import com.voiceclear.app.engine.MemoryGuard
 import com.voiceclear.app.engine.ModelDownloadManager
@@ -24,533 +25,631 @@ import com.voiceclear.app.session.BenchmarkAggregator
 import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.ErrorCodes
 import com.voiceclear.app.session.MetricsCollector
-import com.voiceclear.app.session.ProcessingStage
 import com.voiceclear.app.session.PerformanceBenchmark
+import com.voiceclear.app.session.ProcessingStage
 import com.voiceclear.app.session.SessionController
 import com.voiceclear.app.session.SessionMetrics
+import com.voiceclear.app.session.SessionOperationGate
 import com.voiceclear.app.session.SessionState
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/**
- * 主流程 ViewModel。
- *
- * **为什么抽出来**：`MainActivity` 一度增长到 642 行，混合了视图绑定、
- * 会话状态机、引擎生命周期、协程编排与指标采集五类职责，
- * 任何一处改动都要在长方法里定位，阅读与测试成本都很高。
- *
- * 本类承载**流程与状态**，Activity 只负责把状态映射到视图。
- *
- * **生命周期约定**：ViewModel 跨配置变更（旋转屏幕）存活，
- * 因此引擎持有与录音会话在这里是安全的——旋转屏幕不会中断正在进行的识别。
- */
+/** 主流程状态与资源所有者；Activity 只渲染状态并消费一次性事件。 */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    /** 会话状态机。 */
     val sessionController = SessionController()
-
-    /** 应用设置。 */
     val settings = AppSettings(application)
 
-    /**
-     * 麦克风采集器。
-     *
-     * 音源由用户设置决定，因此是 var——切换音源后需要重建。
-     */
     var audioCapture = AudioCapture(application, sourceOption = settings.audioSource)
         private set
 
-    /** 音频播放。 */
     val audioPlayback = AudioPlayback()
-
-    /** 音频焦点管理。 */
     val audioFocusManager = AudioFocusManager(application)
-
-    /** 语音合成引擎。 */
     val synthesisEngine: SynthesisEngine = AndroidTtsEngine(application)
-
-    /** 模型下载管理。 */
     val modelDownloadManager = ModelDownloadManager(application)
-
-    /** 指标收集。 */
     val metricsCollector = MetricsCollector()
+    val benchmarkAggregator = BenchmarkAggregator()
 
-    /** 真实识别引擎；模型未就绪时为 null。 */
     var senseVoiceEngine: SenseVoiceRecognitionEngine? = null
         private set
 
-    /** 占位引擎，仅在模型未就绪时使用，界面会明确提示。 */
-    private val fallbackEngine: RecognitionEngine = FakeRecognitionEngine()
-
-    /** 当前生效的识别引擎。 */
+    /** 仅占位展示引擎能力；真实主流程在 startRecording 中明确拒绝使用它。 */
     var activeEngine: RecognitionEngine = FakeRecognitionEngine()
         private set
 
-    /** 停止流程是否正在执行（防止双击导致并发停止）。 */
-    private val stopInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    /**
-     * 多轮性能基准聚合（审计 4.2）。
-     *
-     * 保留最近 50 次样本，导出中位数与 P95。
-     * 单次耗时会受温度与后台负载影响，拿单次数字做版本对比不可靠。
-     */
-    val benchmarkAggregator = BenchmarkAggregator()
-
-    /**
-     * 引擎不可用的原因（错误码）；null 表示正常。
-     *
-     * 单独暴露出来，界面才能区分数情况：内存不足 vs 模型缺失 vs 加载失败。
-     */
-    var engineIssue: String? = null
+    var engineIssue: String? = ErrorCodes.ASR_MODEL_MISSING
         private set
 
-    /** 最近一次采集的音频质量分析。 */
+    private val _engineRevision = MutableStateFlow(0L)
+    val engineRevision: StateFlow<Long> = _engineRevision.asStateFlow()
+    private val engineLoadMutex = Mutex()
+    private var engineLoadJob: Job? = null
+
     var lastQuality: AudioQuality.Analysis? = null
         private set
-
-    /** 最近一次识别的性能基准。 */
     var lastBenchmark: PerformanceBenchmark.Record? = null
         private set
-
-    /** 模型加载耗时（毫秒）。 */
     var modelLoadMs: Long = 0L
         private set
 
-    /** 冷启动耗时（毫秒）。 */
+    /** 只在进程首次创建 ViewModel 时由 Activity 写入，旋转不得覆盖。 */
     var coldStartMs: Long = 0L
 
-    /** 各阶段起始时刻。 */
-    private val stageStart = mutableMapOf<String, Long>()
-
-    /** 会话开始时刻。 */
-    private var sessionStartAt = 0L
-
-    /** 最近一次采集的音频。 */
     var lastCapturedSegment: AudioSegment? = null
         private set
-
-    /** 最近一次识别结果。 */
     var lastRecognition: RecognitionResult? = null
         private set
 
+    private data class SessionRuntime(
+        val token: SessionController.Token,
+        val engine: RecognitionEngine,
+        val startedAt: Long,
+        val stageStart: MutableMap<String, Long> = mutableMapOf(),
+        val metricsRecorded: AtomicBoolean = AtomicBoolean(false),
+        var recognitionJob: Job? = null,
+        var playbackJob: Job? = null,
+        var playbackGeneration: Long = 0L,
+        var originalPlaying: Boolean = false,
+    )
+
+    @Volatile
+    private var currentRuntime: SessionRuntime? = null
+
+    private val stopGate = SessionOperationGate()
+
+    // Channel 在无订阅者（旋转/后台）时保留事件；StateFlow 仍负责恢复持久状态。
+    private val _recognitionEvents = Channel<RecognitionOutcome>(Channel.UNLIMITED)
+    val recognitionEvents: Flow<RecognitionOutcome> = _recognitionEvents.receiveAsFlow()
+
+    private val _playbackEvents = Channel<PlaybackOutcome>(Channel.UNLIMITED)
+    val playbackEvents: Flow<PlaybackOutcome> = _playbackEvents.receiveAsFlow()
+
+    data class PlaybackOutcome(
+        val sessionId: String,
+        val generation: Long,
+        val success: Boolean,
+        val original: Boolean,
+    )
+
     /**
-     * 准备识别引擎。
-     *
-     * 模型未就绪时**不使用假引擎冒充真实识别**：
-     * 保持 activeEngine 为占位引擎，但界面会明确提示"模型未就绪"。
+     * 在 IO 线程准备识别引擎，并通过 job + mutex 去重。模型未就绪或加载失败时
+     * 不会把占位引擎用于真实录音。
      */
     fun ensureRecognitionEngine() {
-        val created = RecognitionEngineFactory.create(getApplication())
-        if (created == null) {
-            activeEngine = fallbackEngine
-            engineIssue = ErrorCodes.ASR_MODEL_MISSING
-            DiagnosticLog.w("Main", "识别模型未就绪，当前为占位引擎（界面会提示）")
-            return
-        }
+        if (senseVoiceEngine != null || engineLoadJob?.isActive == true) return
+        engineLoadJob = viewModelScope.launch {
+            engineLoadMutex.withLock {
+                if (senseVoiceEngine != null) return@withLock
+                var unownedEngine: SenseVoiceRecognitionEngine? = null
+                try {
+                    val outcome = try {
+                        withContext(Dispatchers.IO) {
+                            val created = RecognitionEngineFactory.create(getApplication())
+                                ?: return@withContext null
+                            unownedEngine = created.engine
 
-        // **加载前先估算内存**（审计 4.1.2）。
-        // 239 MB 的模型由 native 层分配，不受 Java 堆上限约束，但受系统物理内存约束。
-        // 分配失败时进程会崩在 native 层，拿不到可读错误——所以先判一次，
-        // 不够就明确拒绝，把「闪退」变成「一句能看懂的提示」。
-        val assessment = MemoryGuard.assess(getApplication(), created.engine.modelBytes())
-        if (assessment.verdict == MemoryGuard.Verdict.INSUFFICIENT) {
-            activeEngine = fallbackEngine
-            engineIssue = ErrorCodes.ASR_INSUFFICIENT_MEMORY
-            DiagnosticLog.e("Main", "拒绝加载模型: " + assessment.describe())
-            return
-        }
+                            val assessment = MemoryGuard.assess(
+                                getApplication(),
+                                created.engine.modelBytes(),
+                            )
+                            if (assessment.verdict == MemoryGuard.Verdict.INSUFFICIENT) {
+                                return@withContext LoadResult.Failure(
+                                    ErrorCodes.ASR_INSUFFICIENT_MEMORY,
+                                    assessment.describe(),
+                                )
+                            }
 
-        val loadStart = System.currentTimeMillis()
-        val loaded = created.engine.load()
-        modelLoadMs = System.currentTimeMillis() - loadStart
-        if (loaded) {
-            senseVoiceEngine = created.engine
-            activeEngine = created.engine
-            engineIssue = null
-            DiagnosticLog.i(
-                "Main",
-                "识别引擎就绪: " + created.engine.engineId + ", 加载耗时=" + modelLoadMs + "ms",
-            )
-            if (assessment.verdict == MemoryGuard.Verdict.TIGHT) {
-                DiagnosticLog.w("Main", "内存偏紧但加载成功: " + assessment.describe())
+                            val loadStart = System.currentTimeMillis()
+                            val loaded = created.engine.load()
+                            val elapsed = System.currentTimeMillis() - loadStart
+                            if (!loaded) {
+                                val code = if (created.engine.outOfMemory) {
+                                    ErrorCodes.ASR_INSUFFICIENT_MEMORY
+                                } else {
+                                    ErrorCodes.ASR_MODEL_LOAD_FAILED
+                                }
+                                LoadResult.Failure(code, "outOfMemory=" + created.engine.outOfMemory)
+                            } else {
+                                LoadResult.Success(created.engine, elapsed, assessment.describe())
+                            }
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        LoadResult.Failure(
+                            ErrorCodes.ASR_MODEL_LOAD_FAILED,
+                            error.javaClass.simpleName,
+                        )
+                    }
+
+                    when (outcome) {
+                        null -> {
+                            activeEngine = FakeRecognitionEngine()
+                            engineIssue = ErrorCodes.ASR_MODEL_MISSING
+                            DiagnosticLog.w("Main", "识别模型未就绪，真实录音入口保持关闭")
+                        }
+                        is LoadResult.Failure -> {
+                            senseVoiceEngine = null
+                            activeEngine = FakeRecognitionEngine()
+                            engineIssue = outcome.code
+                            DiagnosticLog.e(
+                                "Main",
+                                "识别引擎加载失败: " + outcome.code + ", " + outcome.detail,
+                            )
+                        }
+                        is LoadResult.Success -> {
+                            senseVoiceEngine?.release()
+                            senseVoiceEngine = outcome.engine
+                            activeEngine = outcome.engine
+                            modelLoadMs = outcome.loadMs
+                            engineIssue = null
+                            unownedEngine = null
+                            DiagnosticLog.i(
+                                "Main",
+                                "识别引擎就绪: " + outcome.engine.engineId +
+                                    ", 加载耗时=" + modelLoadMs + "ms",
+                            )
+                        }
+                    }
+                    _engineRevision.value += 1
+                } finally {
+                    // 失败、异常或 ViewModel 在 IO 加载期间销毁，都不能泄漏 native 引擎。
+                    unownedEngine?.release()
+                }
             }
-        } else {
-            activeEngine = fallbackEngine
-            // 区分「内存不足」与「模型损坏」：前者关掉后台应用可恢复，后者必须重新下载。
-            engineIssue = if (created.engine.outOfMemory) {
-                ErrorCodes.ASR_INSUFFICIENT_MEMORY
-            } else {
-                ErrorCodes.ASR_MODEL_LOAD_FAILED
-            }
-            DiagnosticLog.e(
-                "Main",
-                "识别引擎加载失败, code=" + engineIssue + ", 内存不足=" +
-                    created.engine.outOfMemory,
-            )
         }
     }
 
-    /**
-     * 开始一次会话并立即开始录音。
-     *
-     * @return 失败时的错误码；null 表示成功。
-     */
+    private sealed interface LoadResult {
+        data class Success(
+            val engine: SenseVoiceRecognitionEngine,
+            val loadMs: Long,
+            val memoryDetail: String,
+        ) : LoadResult
+
+        data class Failure(val code: String, val detail: String) : LoadResult
+    }
+
+    /** 开始会话前先做模型门禁，再推进状态，最后才清理上一轮结果。 */
     fun startRecording(): String? {
+        val engine = senseVoiceEngine ?: return engineIssue ?: ErrorCodes.ASR_MODEL_MISSING
+        if (!sessionController.state.value.canStartNewSession) return ErrorCodes.SESSION_STALE
+        if (!sessionController.startSession()) return ErrorCodes.SESSION_STALE
+        val token = sessionController.currentToken()
+            ?: return ErrorCodes.SESSION_STALE
+        val runtime = SessionRuntime(token, engine, System.currentTimeMillis())
+        currentRuntime = runtime
+
         audioPlayback.stop()
         audioFocusManager.abandonFocus()
         (synthesisEngine as? AndroidTtsEngine)?.stop()
         lastCapturedSegment = null
         lastRecognition = null
+        lastQuality = null
 
-        if (!sessionController.startSession()) {
-            return ErrorCodes.SESSION_STALE
-        }
-
-        sessionStartAt = System.currentTimeMillis()
-        stageStart.clear()
-
-        // 立即开始录音，调用方负责在用户再次点击时停止。
-        val failure = audioCapture.start(sessionController.sessionId ?: "")
+        val failure = audioCapture.start(token.sessionId)
         if (failure != null) {
-            sessionController.fail(ProcessingStage.CAPTURE, failure)
+            sessionController.fail(token, ProcessingStage.CAPTURE, failure)
+            recordMetrics(runtime, failed = true, cancelled = false)
             return failure
         }
 
-        DiagnosticLog.i(
-            "Session",
-            "会话开始, id=" + (sessionController.sessionId ?: "none").take(8),
-        )
+        DiagnosticLog.i("Session", "会话开始, id=" + token.sessionId.take(8))
         return null
     }
 
-    /**
-     * 停止录音并执行识别。
-     *
-     * 流程：停止采集 → 识别 → 产出可确认的文本。
-     *
-     * @param onRecognized 识别完成回调（在主线程）
-     */
-    fun stopRecordingAndProcess(onRecognized: (RecognitionOutcome) -> Unit) {
-        val sessionId = sessionController.sessionId ?: return
-
-        // 幂等保护：按钮双击会让两个协程并发进入，
-        // 第二个 audioCapture.stop() 会因 current 已被置空而返回
-        // "capture_not_recording"，表现为识别完成后弹出一个莫名的错误。
-        // 这里用原子标志保证同一时刻只有一个停止流程。
-        if (!stopInFlight.compareAndSet(false, true)) {
-            DiagnosticLog.w("Main", "忽略重复的停止请求")
+    /** 每次会话使用独立停止锁；所有异步结果都同时校验 sessionId 与 generation。 */
+    fun stopRecordingAndProcess() {
+        val runtime = currentRuntime ?: return
+        val token = runtime.token
+        if (!sessionController.isCurrent(token)) return
+        if (!stopGate.tryBegin(token)) {
+            DiagnosticLog.w("Main", "忽略同一会话的重复停止请求")
+            return
+        }
+        if (!sessionController.stopCapture(token)) {
+            stopGate.end(token)
             return
         }
 
-        // **必须先把状态机推离 RECORDING**，再停采集器。
-        // 状态机不允许 RECORDING 直跳 AWAITING_CONFIRMATION，
-        // 漏掉这一步会导致识别成功后状态仍停在 RECORDING：
-        // 界面看起来正常（按字面量渲染），但按钮再点一次时
-        // onRecordClicked 会认为「还在录音」，于是又调一次停止，
-        // 采集器已空 → capture_not_recording → 弹出误导性的「录音失败」。
-        sessionController.stopCapture()
-
-        viewModelScope.launch {
+        runtime.recognitionJob = viewModelScope.launch {
             try {
-
                 val captureStart = System.currentTimeMillis()
-                val result = withContext(Dispatchers.IO) {
-                    audioCapture.stop()
-                }
-
-                when (result) {
+                when (val result = withContext(Dispatchers.IO) { audioCapture.stop() }) {
                     is AudioCapture.CaptureResult.Failure -> {
-                        DiagnosticLog.e("Main", "采集失败, code=" + result.code)
-                        sessionController.fail(ProcessingStage.CAPTURE, result.code)
-                        onRecognized(RecognitionOutcome.Error(result.code))
+                        failRecognition(runtime, ProcessingStage.CAPTURE, result.code)
                     }
-
                     is AudioCapture.CaptureResult.Success -> {
-                        val segment = result.segment
-                        lastCapturedSegment = segment
-                        stageStart["capture"] = System.currentTimeMillis() - captureStart
-
-                        DiagnosticLog.i(
-                            "Capture",
-                            "采集完成, 耗时=" + stageStart["capture"] + "ms, 时长=" +
-                                segment.durationMs + "ms, 采样率=" + segment.sampleRate +
-                                ", 质量标记=" + segment.qualityFlags,
-                        )
-
-                        if (segment.qualityFlags.contains(AudioCapture.FLAG_EMPTY_CAPTURE)) {
-                            sessionController.fail(
-                                ProcessingStage.CAPTURE,
-                                AudioCapture.FLAG_EMPTY_CAPTURE,
-                            )
-                            onRecognized(RecognitionOutcome.Error(AudioCapture.FLAG_EMPTY_CAPTURE))
-                            return@launch
-                        }
-
-                        // **先做质量分析再送模型**。
-                        // 实测发现大量录音几乎是静音，模型在这种输入上会产生
-                        // 幻觉输出（识别出 <|en|> 等无意义内容），用户完全无法理解。
-                        // 这里提前判定并给出可行动的中文提示。
-                        val quality = AudioQuality.analyze(
-                            AudioQuality.toFloatSamples(segment.samples),
-                        )
-                        lastQuality = quality
-                        DiagnosticLog.i(
-                            "Quality",
-                            "音频质量: " + quality.verdict + ", RMS=" +
-                                String.format(java.util.Locale.US, "%.4f", quality.rms) +
-                                ", 峰值=" + String.format(java.util.Locale.US, "%.4f", quality.peak) +
-                                ", 有效占比=" +
-                                String.format(java.util.Locale.US, "%.2f", quality.activeRatio),
-                        )
-
-                        if (quality.verdict == AudioQuality.Verdict.SILENT) {
-                            // 几乎肯定没有有效语音：不送去识别，
-                            // 否则只会得到一句莫名其妙的输出。
-                            sessionController.fail(
-                                ProcessingStage.CAPTURE,
-                                ErrorCodes.CAPTURE_SILENT,
-                            )
-                            onRecognized(RecognitionOutcome.Error(ErrorCodes.CAPTURE_SILENT))
-                            return@launch
-                        }
-
-                        val recognitionStart = System.currentTimeMillis()
-                        val recognition = activeEngine.recognize(
-                            RecognitionRequest(
-                                sessionId = sessionId,
-                                audio = segment,
-                                engineVersion = ENGINE_VERSION,
-                            ),
-                        )
-                        val recognitionMs = System.currentTimeMillis() - recognitionStart
-
-                        lastBenchmark = PerformanceBenchmark.recordRecognition(
-                            recognitionMs = recognitionMs,
-                            audioMs = segment.durationMs,
-                            modelLoadMs = modelLoadMs,
-                            coldStartMs = coldStartMs,
-                        )
-
-                        if (!sessionController.isCurrent(sessionId)) return@launch
-                        stageStart["recognition"] = recognitionMs
-                        lastRecognition = recognition
-                        sessionController.onRecognitionReady()
-
-                        // 识别一完成就投喂聚合器，**不等用户确认**。
-                        // 实测里用户常常「录一句、看一眼结果、接着录下一句」，
-                        // 从不点确认；若只在会话收尾时记录，聚合结果永远是空。
-                        // 合成/播放耗时待真正发生后再用 amendLast 回填。
-                        benchmarkAggregator.add(
-                            BenchmarkAggregator.Sample(
-                                captureMs = stageStart["capture"] ?: 0L,
-                                recognitionMs = recognitionMs,
-                                synthesisMs = 0L,
-                                playbackMs = 0L,
-                                totalMs = (stageStart["capture"] ?: 0L) + recognitionMs,
-                                audioMs = segment.durationMs,
-                            ),
-                        )
-
-                        DiagnosticLog.i(
-                            "Recognition",
-                            "识别完成, 耗时=" + recognitionMs + "ms, 文本长度=" +
-                                recognition.normalizedText.length,
-                        )
-                        onRecognized(RecognitionOutcome.Success(recognition, segment))
+                        processCapture(runtime, result.segment, captureStart)
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                DiagnosticLog.e("Main", "识别流程异常: " + error.javaClass.simpleName)
+                failRecognition(runtime, ProcessingStage.RECOGNITION, ErrorCodes.ASR_DECODE_FAILED)
             } finally {
-                stopInFlight.set(false)
+                stopGate.end(token)
             }
         }
     }
 
+    private suspend fun processCapture(runtime: SessionRuntime, segment: AudioSegment, captureStart: Long) {
+        val token = runtime.token
+        if (!sessionController.isCurrent(token)) return
+        lastCapturedSegment = segment
+        runtime.stageStart["capture"] = System.currentTimeMillis() - captureStart
 
+        if (segment.qualityFlags.contains(AudioCapture.FLAG_EMPTY_CAPTURE)) {
+            failRecognition(runtime, ProcessingStage.CAPTURE, AudioCapture.FLAG_EMPTY_CAPTURE)
+            return
+        }
 
-    /**
-     * 记录一次会话指标。
-     */
-    fun recordMetrics(confidence: Float? = null, failed: Boolean, cancelled: Boolean) {
-        val recognitionMs = stageStart["recognition"] ?: 0L
-        val synthesisMs = stageStart["synthesis"] ?: 0L
-        val totalMs = if (sessionStartAt > 0) System.currentTimeMillis() - sessionStartAt else 0L
+        val quality = AudioQuality.analyze(AudioQuality.toFloatSamples(segment.samples))
+        lastQuality = quality
+        if (quality.verdict == AudioQuality.Verdict.SILENT) {
+            failRecognition(runtime, ProcessingStage.CAPTURE, ErrorCodes.CAPTURE_SILENT)
+            return
+        }
 
-        val metrics = SessionMetrics(
-            sessionId = sessionController.sessionId ?: "",
-            captureMs = stageStart["capture"] ?: 0L,
+        val recognitionStart = System.currentTimeMillis()
+        val recognition = withContext(Dispatchers.IO) {
+            runtime.engine.recognize(
+                RecognitionRequest(
+                    sessionId = token.sessionId,
+                    audio = segment,
+                    engineVersion = ENGINE_VERSION,
+                ),
+            )
+        }
+        val recognitionMs = System.currentTimeMillis() - recognitionStart
+        if (!sessionController.isCurrent(token)) return
+        if (recognition.sessionId != token.sessionId) {
+            failRecognition(runtime, ProcessingStage.RECOGNITION, ErrorCodes.SESSION_STALE)
+            return
+        }
+        if (!recognition.isSuccess) {
+            failRecognition(
+                runtime,
+                ProcessingStage.RECOGNITION,
+                recognition.errorCode ?: ErrorCodes.ASR_DECODE_FAILED,
+            )
+            return
+        }
+        if (recognition.warnings.isNotEmpty()) {
+            failRecognition(runtime, ProcessingStage.RECOGNITION, recognition.warnings.first())
+            return
+        }
+        if (recognition.normalizedText.isBlank()) {
+            failRecognition(runtime, ProcessingStage.RECOGNITION, ErrorCodes.ASR_DECODE_FAILED)
+            return
+        }
+
+        runtime.stageStart["recognition"] = recognitionMs
+        lastBenchmark = PerformanceBenchmark.recordRecognition(
             recognitionMs = recognitionMs,
-            synthesisMs = synthesisMs,
-            playbackMs = stageStart["playback"] ?: 0L,
-            totalMs = totalMs,
+            audioMs = segment.durationMs,
+            modelLoadMs = modelLoadMs,
+            coldStartMs = coldStartMs,
+        )
+        lastRecognition = recognition
+        if (!sessionController.onRecognitionReady(token)) return
+
+        benchmarkAggregator.add(
+            BenchmarkAggregator.Sample(
+                captureMs = runtime.stageStart["capture"] ?: 0L,
+                recognitionMs = recognitionMs,
+                synthesisMs = 0L,
+                playbackMs = 0L,
+                totalMs = (runtime.stageStart["capture"] ?: 0L) + recognitionMs,
+                audioMs = segment.durationMs,
+                sessionId = token.sessionId,
+            ),
+        )
+        _recognitionEvents.trySend(
+            RecognitionOutcome.Success(token.sessionId, token.generation, recognition, segment),
+        )
+    }
+
+    private fun failRecognition(runtime: SessionRuntime, stage: ProcessingStage, code: String) {
+        if (!sessionController.fail(runtime.token, stage, code)) return
+        DiagnosticLog.e("Main", "识别流程失败, stage=" + stage + ", code=" + code)
+        recordMetrics(runtime, failed = true, cancelled = false)
+        _recognitionEvents.trySend(
+            RecognitionOutcome.Error(runtime.token.sessionId, runtime.token.generation, code),
+        )
+    }
+
+    /** 合成前取得焦点；每次播放有独立 generation，旧任务不能清理新任务。 */
+    fun synthesizeAndPlay(confirmedText: String) {
+        val runtime = currentRuntime ?: return
+        val token = runtime.token
+        if (!sessionController.isCurrent(token)) return
+
+        runtime.playbackJob?.cancel()
+        val playbackGeneration = ++runtime.playbackGeneration
+        runtime.originalPlaying = false
+        audioPlayback.stop()
+        (synthesisEngine as? AndroidTtsEngine)?.stop()
+        runtime.playbackJob = viewModelScope.launch {
+            var success = false
+            try {
+                if (!audioFocusManager.requestFocus()) {
+                    failPlayback(runtime, playbackGeneration, ProcessingStage.PLAYBACK, ErrorCodes.FOCUS_DENIED)
+                    return@launch
+                }
+                val synthesisStart = System.currentTimeMillis()
+                val result = synthesisEngine.synthesize(
+                    SynthesisRequest(
+                        sessionId = token.sessionId,
+                        confirmedText = confirmedText,
+                        voiceProfileRef = null,
+                        engineVersion = ENGINE_VERSION,
+                    ),
+                )
+                runtime.stageStart["synthesis"] = System.currentTimeMillis() - synthesisStart
+                if (!sessionController.isCurrent(token) || !ownsPlayback(runtime, playbackGeneration)) {
+                    return@launch
+                }
+                if (result.sessionId != token.sessionId || result.warnings.isNotEmpty()) {
+                    failPlayback(
+                        runtime,
+                        playbackGeneration,
+                        ProcessingStage.SYNTHESIS,
+                        result.warnings.firstOrNull() ?: ErrorCodes.SESSION_STALE,
+                    )
+                    return@launch
+                }
+                if (!sessionController.onSynthesisReady(token)) return@launch
+
+                val playbackStart = System.currentTimeMillis()
+                val audio = result.audio
+                val played = if (audio == null) {
+                    true // AndroidTtsEngine.synthesize 仅在系统 TTS onDone 后返回。
+                } else {
+                    withContext(Dispatchers.IO) { audioPlayback.play(audio) }
+                }
+                runtime.stageStart["playback"] = System.currentTimeMillis() - playbackStart
+                if (!sessionController.isCurrent(token) || !ownsPlayback(runtime, playbackGeneration)) {
+                    return@launch
+                }
+                if (!played) {
+                    failPlayback(runtime, playbackGeneration, ProcessingStage.PLAYBACK, ErrorCodes.TTS_SPEAK_FAILED)
+                    return@launch
+                }
+
+                audioFocusManager.abandonFocus()
+                if (!sessionController.onPlaybackFinished(token)) return@launch
+                recordMetrics(runtime, failed = false, cancelled = false)
+                success = true
+                sendPlayback(runtime, playbackGeneration, success = true, original = false)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                DiagnosticLog.e("Main", "合成/播放异常: " + error.javaClass.simpleName)
+                failPlayback(runtime, playbackGeneration, ProcessingStage.PLAYBACK, ErrorCodes.TTS_SPEAK_FAILED)
+            } finally {
+                if (currentRuntime === runtime && ownsPlayback(runtime, playbackGeneration)) {
+                    audioFocusManager.abandonFocus()
+                    if (!success) (synthesisEngine as? AndroidTtsEngine)?.stop()
+                }
+            }
+        }
+    }
+
+    private fun ownsPlayback(runtime: SessionRuntime, generation: Long): Boolean =
+        runtime.playbackGeneration == generation
+
+    private fun sendPlayback(
+        runtime: SessionRuntime,
+        generation: Long,
+        success: Boolean,
+        original: Boolean,
+    ) {
+        if (!ownsPlayback(runtime, generation)) return
+        _playbackEvents.trySend(
+            PlaybackOutcome(runtime.token.sessionId, runtime.token.generation, success, original),
+        )
+    }
+
+    private fun failPlayback(
+        runtime: SessionRuntime,
+        playbackGeneration: Long,
+        stage: ProcessingStage,
+        code: String,
+    ) {
+        if (!ownsPlayback(runtime, playbackGeneration)) return
+        if (!sessionController.fail(runtime.token, stage, code)) return
+        audioPlayback.stop()
+        (synthesisEngine as? AndroidTtsEngine)?.stop()
+        audioFocusManager.abandonFocus()
+        recordMetrics(runtime, failed = true, cancelled = false)
+        sendPlayback(runtime, playbackGeneration, success = false, original = false)
+    }
+
+    /** 播放原声也返回真实结果，且与系统 TTS 互斥。 */
+    fun playOriginal() {
+        if (sessionController.state.value.isBusy) return
+        val segment = lastCapturedSegment ?: return
+        val runtime = currentRuntime?.takeIf { it.token.sessionId == segment.sessionId } ?: return
+        runtime.playbackJob?.cancel()
+        val playbackGeneration = ++runtime.playbackGeneration
+        runtime.originalPlaying = true
+        runtime.playbackJob = viewModelScope.launch {
+            try {
+                (synthesisEngine as? AndroidTtsEngine)?.stop()
+                audioPlayback.stop()
+                if (!audioFocusManager.requestFocus()) {
+                    sendPlayback(runtime, playbackGeneration, success = false, original = true)
+                    return@launch
+                }
+                val played = withContext(Dispatchers.IO) { audioPlayback.play(segment) }
+                sendPlayback(runtime, playbackGeneration, played, original = true)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                sendPlayback(runtime, playbackGeneration, success = false, original = true)
+            } finally {
+                if (currentRuntime === runtime && ownsPlayback(runtime, playbackGeneration)) {
+                    audioFocusManager.abandonFocus()
+                    runtime.originalPlaying = false
+                }
+            }
+        }
+    }
+
+    /** 延迟焦点事件不得终止未持焦点的录音；真正丢焦先取消等待中的 TTS。 */
+    fun handleFocusLost() {
+        if (audioFocusManager.hasFocus()) return
+        val runtime = currentRuntime ?: return
+        when (sessionController.state.value) {
+            SessionState.PROCESSING_SYNTHESIZING, SessionState.PLAYING -> {
+                runtime.playbackJob?.cancel()
+                failPlayback(
+                    runtime,
+                    runtime.playbackGeneration,
+                    ProcessingStage.PLAYBACK,
+                    ErrorCodes.FOCUS_DENIED,
+                )
+            }
+            else -> if (runtime.originalPlaying) {
+                val generation = runtime.playbackGeneration
+                runtime.playbackJob?.cancel()
+                runtime.originalPlaying = false
+                audioPlayback.stop()
+                (synthesisEngine as? AndroidTtsEngine)?.stop()
+                audioFocusManager.abandonFocus()
+                sendPlayback(runtime, generation, success = false, original = true)
+            }
+        }
+    }
+
+    /** 取消立即使令牌失效，再取消任务与释放资源；指标只记录一次。 */
+    fun cancelSession() {
+        val runtime = currentRuntime
+        val token = runtime?.token ?: sessionController.currentToken() ?: return
+        val transitioned = sessionController.cancel(token)
+        runtime?.recognitionJob?.cancel()
+        runtime?.playbackJob?.cancel()
+        audioPlayback.stop()
+        audioFocusManager.abandonFocus()
+        audioCapture.cancel()
+        (synthesisEngine as? AndroidTtsEngine)?.stop()
+        if (transitioned) {
+            runtime?.let { recordMetrics(it, failed = false, cancelled = true) }
+            DiagnosticLog.i("Main", "会话已取消")
+        }
+    }
+
+    /** 应用音源成功后才持久化，拒绝切换时设置保持不变。 */
+    fun applyAudioSource(option: AudioSourceOption = settings.audioSource): Boolean {
+        if (sessionController.state.value.isBusy) {
+            DiagnosticLog.w("Main", "会话进行中，拒绝切换麦克风音源")
+            return false
+        }
+        audioCapture.cancel()
+        audioCapture = AudioCapture(getApplication(), sourceOption = option)
+        settings.audioSource = option
+        DiagnosticLog.i("Main", "已应用麦克风音源: " + option.id)
+        return true
+    }
+
+    fun recordMetrics(confidence: Float? = null, failed: Boolean, cancelled: Boolean) {
+        val runtime = currentRuntime ?: return
+        recordMetrics(runtime, confidence, failed, cancelled)
+    }
+
+    private fun recordMetrics(
+        runtime: SessionRuntime,
+        confidence: Float? = null,
+        failed: Boolean,
+        cancelled: Boolean,
+    ) {
+        if (!runtime.metricsRecorded.compareAndSet(false, true)) return
+        val metrics = SessionMetrics(
+            sessionId = runtime.token.sessionId,
+            captureMs = runtime.stageStart["capture"] ?: 0L,
+            recognitionMs = runtime.stageStart["recognition"] ?: 0L,
+            synthesisMs = runtime.stageStart["synthesis"] ?: 0L,
+            playbackMs = runtime.stageStart["playback"] ?: 0L,
+            totalMs = System.currentTimeMillis() - runtime.startedAt,
             outcome = metricsCollector.deriveOutcome(confidence, failed, cancelled),
-            modelVersion = ENGINE_VERSION + "+" + activeEngine.engineId,
-            qualityFlags = lastCapturedSegment?.qualityFlags ?: emptyList(),
+            modelVersion = ENGINE_VERSION + "+" + runtime.engine.engineId,
+            qualityFlags = lastCapturedSegment
+                ?.takeIf { it.sessionId == runtime.token.sessionId }
+                ?.qualityFlags
+                .orEmpty(),
         )
         metricsCollector.record(metrics)
-
-        // 会话收尾：把合成与播放耗时回填到识别时已记录的那条样本上，
-        // 避免同一次会话被统计两次。
-        benchmarkAggregator.amendLast(
+        benchmarkAggregator.amend(
+            sessionId = runtime.token.sessionId,
             synthesisMs = metrics.synthesisMs,
             playbackMs = metrics.playbackMs,
             totalMs = metrics.totalMs,
         )
-
-        DiagnosticLog.i(
-            "Metrics",
-            "指标记录, outcome=" + metrics.outcome + ", total=" + metrics.totalMs +
-                "ms, capture=" + metrics.captureMs + "ms, recognition=" +
-                metrics.recognitionMs + "ms, synthesis=" + metrics.synthesisMs + "ms",
-        )
-
-        stageStart.clear()
-        sessionStartAt = 0L
+        runtime.stageStart.clear()
+        DiagnosticLog.i("Metrics", "指标记录, outcome=" + metrics.outcome)
     }
 
-    /** 记录阶段耗时。 */
+    /** 兼容既有诊断调用；新代码应使用会话内部阶段表。 */
     fun markStage(name: String, elapsedMs: Long) {
-        stageStart[name] = elapsedMs
+        currentRuntime?.stageStart?.set(name, elapsedMs)
     }
 
-    /** 当前生效引擎的 ID（用于指标记录）。 */
     val engineId: String
         get() = activeEngine.engineId
 
-    /**
-     * 合成并播放确认后的文本。
-     *
-     * 流程：合成 → 申请音频焦点 → 播放 → 释放焦点 → 记录指标。
-     * 焦点申请失败必须中止播放，否则来电等高优先级音频会与本应用叠加。
-     *
-     * @param confirmedText 用户确认的文本
-     * @param onFinished 流程结束回调（主线程），携带是否成功
-     */
-    fun synthesizeAndPlay(confirmedText: String, onFinished: (Boolean) -> Unit) {
-        val sessionId = sessionController.sessionId ?: return
-        viewModelScope.launch {
-            val synthesisStart = System.currentTimeMillis()
-            val result = synthesisEngine.synthesize(
-                SynthesisRequest(
-                    sessionId = sessionId,
-                    confirmedText = confirmedText,
-                    voiceProfileRef = null,
-                    engineVersion = ENGINE_VERSION,
-                ),
-            )
-            val synthesisMs = System.currentTimeMillis() - synthesisStart
-            DiagnosticLog.i(
-                "Synthesis",
-                "合成完成, 耗时=" + synthesisMs + "ms, 警告=" + result.warnings.joinToString(),
-            )
-            if (!sessionController.isCurrent(sessionId)) return@launch
-            stageStart["synthesis"] = synthesisMs
-
-            // 播放前先申请焦点：原生 TTS 直接发声，没有焦点会让来电等高优先级音频叠加。
-            if (!audioFocusManager.requestFocus()) {
-                sessionController.fail(ProcessingStage.PLAYBACK, AudioFocusManager.ERR_FOCUS_DENIED)
-                recordMetrics(failed = true, cancelled = false)
-                onFinished(false)
-                return@launch
-            }
-
-            sessionController.onSynthesisReady()
-            onStateChanged?.invoke(SessionState.PLAYING)
-            val playbackStart = System.currentTimeMillis()
-
-            val audio = result.audio
-            if (audio == null) {
-                // 原生 TTS 已在 synthesize() 内完成发声，此处等待引擎回调返回。
-                if (result.warnings.isNotEmpty()) {
-                    sessionController.fail(ProcessingStage.SYNTHESIS, result.warnings.first())
-                    audioFocusManager.abandonFocus()
-                    recordMetrics(failed = true, cancelled = false)
-                    onFinished(false)
-                    return@launch
-                }
-            } else {
-                withContext(Dispatchers.IO) { audioPlayback.play(audio) }
-            }
-
-            stageStart["playback"] = System.currentTimeMillis() - playbackStart
-            DiagnosticLog.i("Playback", "播放结束, 耗时=" + stageStart["playback"] + "ms")
-            audioFocusManager.abandonFocus()
-            if (sessionController.isCurrent(sessionId)) {
-                sessionController.onPlaybackFinished()
-            }
-            recordMetrics(failed = false, cancelled = false)
-            onFinished(true)
-        }
-    }
-
-    /** 播放最近一次采集的原始语音。 */
-    fun playOriginal(onFinished: () -> Unit) {
-        val segment = lastCapturedSegment ?: return
-        viewModelScope.launch {
-            if (!audioFocusManager.requestFocus()) {
-                onFinished()
-                return@launch
-            }
-            withContext(Dispatchers.IO) { audioPlayback.play(segment) }
-            audioFocusManager.abandonFocus()
-            onFinished()
-        }
-    }
-
-    /** 取消当前会话。 */
-    fun cancelSession() {
+    override fun onCleared() {
+        cancelSession()
+        engineLoadJob?.cancel()
         audioPlayback.stop()
+        audioCapture.cancel()
         audioFocusManager.abandonFocus()
-        audioCapture.cancel()
-        sessionController.cancel()
-        DiagnosticLog.i("Main", "会话已取消")
-    }
-
-    /**
-     * 应用新的麦克风音源设置。
-     *
-     * 需要重建采集器——AudioRecord 的音源在构造时确定，无法运行时切换。
-     */
-    /**
-     * 应用新的麦克风音源设置。
-     *
-     * @return 录音进行中返回 false（拒绝切换），否则 true。
-     */
-    fun applyAudioSource(): Boolean {
-        // 录音进行中不允许切换：AudioRecord 的音源在构造时确定，
-        // 此刻重建等于丢弃正在进行的录音。先拒绝，让用户停止后再切。
-        if (sessionController.state.value == SessionState.RECORDING) {
-            DiagnosticLog.w("Main", "录音进行中，拒绝切换麦克风音源")
-            return false
+        (synthesisEngine as? AndroidTtsEngine)?.release()
+        val engine = senseVoiceEngine
+        senseVoiceEngine = null
+        val recognitionJob = currentRuntime?.recognitionJob
+        if (engine != null) {
+            if (recognitionJob?.isActive == true) {
+                // 协程取消不会中断 native decode；等任务真正退出后再释放 recognizer。
+                recognitionJob.invokeOnCompletion { engine.release() }
+            } else {
+                engine.release()
+            }
         }
-        // 必须先释放旧采集器：它可能持有 AudioRecord 与麦克风。
-        // 不清理的话旧实例泄漏，麦克风被占着，新采集器会初始化失败。
-        audioCapture.cancel()
-        audioCapture = AudioCapture(
-            getApplication(),
-            sourceOption = settings.audioSource,
-        )
-        DiagnosticLog.i(
-            "Main",
-            "已应用麦克风音源: " + settings.audioSource.id,
-        )
-        return true
+        _recognitionEvents.close()
+        _playbackEvents.close()
+        super.onCleared()
     }
 
-    /** 状态变化回调，由 Activity 注册以驱动界面刷新。 */
-    var onStateChanged: ((SessionState) -> Unit)? = null
-
-    /** 识别流程的结果。 */
     sealed interface RecognitionOutcome {
-        /** 识别成功。 */
+        val sessionId: String
+        val generation: Long
+
         data class Success(
+            override val sessionId: String,
+            override val generation: Long,
             val recognition: RecognitionResult,
             val segment: AudioSegment,
         ) : RecognitionOutcome
 
-        /** 识别失败，携带错误码。 */
-        data class Error(val code: String) : RecognitionOutcome
+        data class Error(
+            override val sessionId: String,
+            override val generation: Long,
+            val code: String,
+        ) : RecognitionOutcome
     }
 
     companion object {

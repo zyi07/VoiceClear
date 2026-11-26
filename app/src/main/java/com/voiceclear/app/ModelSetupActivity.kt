@@ -52,25 +52,27 @@ class ModelSetupActivity : ComponentActivity() {
     }
 
     private fun refreshState() {
-        if (downloadManager.isReady()) {
-            statusText.setText(R.string.model_ready)
-            detailText.text = getString(
-                R.string.model_detail_ready,
-                formatSize(downloadManager.diskUsage()),
-            )
-            progressBar.visibility = View.GONE
-            downloadButton.visibility = View.GONE
-            DiagnosticLog.i("ModelSetup", "模型已就绪")
-            finish()
-            return
-        }
+        lifecycleScope.launch {
+            // isReady 会复验大模型的大小与 SHA-256，不能阻塞 Activity 主线程。
+            val ready = withContext(Dispatchers.IO) { downloadManager.isReady() }
+            if (ready) {
+                statusText.setText(R.string.model_ready)
+                detailText.text = getString(
+                    R.string.model_detail_ready,
+                    formatSize(downloadManager.diskUsage()),
+                )
+                progressBar.visibility = View.GONE
+                downloadButton.visibility = View.GONE
+                DiagnosticLog.i("ModelSetup", "模型已就绪")
+                finish()
+                return@launch
+            }
 
-        statusText.setText(R.string.model_not_ready)
-        detailText.setText(
-            R.string.model_detail_not_ready,
-        )
-        progressBar.visibility = View.GONE
-        downloadButton.visibility = View.VISIBLE
+            statusText.setText(R.string.model_not_ready)
+            detailText.setText(R.string.model_detail_not_ready)
+            progressBar.visibility = View.GONE
+            downloadButton.visibility = View.VISIBLE
+        }
     }
 
     /** 网络是否可用。 */
@@ -153,10 +155,14 @@ class ModelSetupActivity : ComponentActivity() {
         }
     }
 
-    /** 同步加载引擎（供后台线程调用）。 */
+    /** 同步加载引擎（供后台线程调用）；临时 native 资源无论成败都必须释放。 */
     private fun loadEngineBlocking(): Boolean {
         val created = RecognitionEngineFactory.create(applicationContext) ?: return false
-        return created.engine.load()
+        return try {
+            created.engine.load()
+        } finally {
+            created.engine.release()
+        }
     }
 
     private fun formatSize(bytes: Long): String {

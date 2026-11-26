@@ -5,13 +5,8 @@ import java.util.UUID
 /**
  * 采集会话控制器。
  *
- * 负责采集流程的状态推进：
- * 选择提示 → 录音 → 质量检查 → 意图确认 → 入库。
- *
- * 关键规则（协议第 4.2 节）：
- * - 自发表达必须由用户确认「我本来想说什么」，否则标记为 UNCONFIRMED，不计入正确率统计；
- * - 朗读场景使用批准的提示文本，参考来源为 APPROVED_PROMPT；
- * - 每条片段都必须带授权标记，未授权用途在入库时拒绝。
+ * 负责采集流程的状态推进：选择提示 → 录音 → 质量检查 → 意图确认 → 入库。
+ * 自发表达必须由用户确认意图基准；研究采集必须具有明确的 research_use 授权。
  */
 class CaptureSessionController(
     val speakerId: String,
@@ -28,6 +23,7 @@ class CaptureSessionController(
     }
 
     private val segments = mutableListOf<CaptureSegment>()
+    private var phaseBeforeRecording: Phase = Phase.PROMPT_SELECTED
 
     var phase: Phase = Phase.IDLE
         private set
@@ -35,41 +31,34 @@ class CaptureSessionController(
     var currentPrompt: CapturePrompt? = null
         private set
 
-    /** 是否处于自发表达模式（无提示句）。 */
     val isSpontaneous: Boolean get() = currentPrompt == null
 
-    /** 本次会话采集到的片段。 */
     fun collectedSegments(): List<CaptureSegment> = segments.toList()
 
     fun segmentCount(): Int = segments.size
 
-    /**
-     * 选择一条提示句并进入待录状态。
-     *
-     * 传入 null 表示进入**自发表达**模式：此时没有提示文本，
-     * 录音后必须由用户确认意图基准，否则该片段不计入内容正确率统计。
-     */
     fun selectPrompt(prompt: CapturePrompt?) {
+        check(phase != Phase.RECORDING) { "录音中不能切换提示句或采集模式" }
         currentPrompt = prompt
         phase = Phase.PROMPT_SELECTED
     }
 
-    /** 进入录音状态。 */
+    /** 进入录音状态；启动失败时调用 [rollbackRecordingStart]。 */
     fun startRecording() {
         require(phase == Phase.PROMPT_SELECTED || phase == Phase.SAVED) {
             "必须先选择提示句或进入自发表达模式才能开始录音"
         }
+        phaseBeforeRecording = phase
         phase = Phase.RECORDING
     }
 
-    /**
-     * 提交一条录音结果。
-     *
-     * @param durationMs 录音时长
-     * @param qualityFlags 质量标记，如过短、空采集
-     * @param intendedText 自发表达场景下用户确认的原话（朗读场景为 null）
-     * @param confirmed 用户是否确认了意图基准
-     */
+    /** AudioRecord 启动失败或停止失败时恢复，避免下一次点击触发非法状态崩溃。 */
+    fun rollbackRecordingStart() {
+        if (phase == Phase.RECORDING) {
+            phase = phaseBeforeRecording
+        }
+    }
+
     fun submitSegment(
         durationMs: Long,
         sampleRate: Int,
@@ -80,23 +69,31 @@ class CaptureSessionController(
         environment: String,
         consentFlags: List<String>,
     ): CaptureSegment {
+        check(phase == Phase.RECORDING) { "只有录音结束后才能提交片段" }
+        require(ConsentFlags.RESEARCH_USE in consentFlags) {
+            "没有明确 research_use 授权，不得入库研究片段"
+        }
+        require(consentFlags.all { it in ConsentFlags.ALL }) { "包含未知授权用途" }
+
         val prompt = currentPrompt
         val scene = if (prompt == null) CaptureScene.SPONTANEOUS else CaptureScene.READ
-
         val referenceSource = when {
             prompt != null -> ReferenceSource.APPROVED_PROMPT
             confirmed -> ReferenceSource.USER_CONFIRMED
             else -> ReferenceSource.UNCONFIRMED
         }
-
         val referenceText = when {
             prompt != null -> prompt.text
             confirmed -> intendedText.orEmpty().trim()
             else -> ""
         }
+        require(referenceSource != ReferenceSource.USER_CONFIRMED || referenceText.isNotEmpty()) {
+            "已确认的自发表达必须有意图文本"
+        }
 
+        val segmentId = "seg_" + UUID.randomUUID().toString().take(8)
         val segment = CaptureSegment(
-            segmentId = "seg_" + UUID.randomUUID().toString().take(8),
+            segmentId = segmentId,
             sessionId = sessionId,
             speakerId = speakerId,
             sessionDate = sessionDate,
@@ -115,17 +112,25 @@ class CaptureSessionController(
             deviceModel = DeviceContext.deviceModel(),
             environment = environment,
             qualityFlags = qualityFlags,
-            annotatorId = "self",
-            guideVersion = "v1.0",
-            consentFlags = consentFlags,
-            audioFileName = "",
+            annotatorId = CaptureStore.ANNOTATOR_ID,
+            guideVersion = CaptureStore.GUIDELINE_VERSION,
+            consentFlags = consentFlags.distinct(),
+            audioFileName = CaptureStore.audioRelativePath(sessionId, segmentId),
         )
         segments.add(segment)
         phase = if (scene == CaptureScene.SPONTANEOUS) Phase.AWAITING_INTENT else Phase.SAVED
         return segment
     }
 
-    /** 确认自发表达的意图基准。 */
+    /** 存储失败时撤销内存中的片段，防止 UI 把未落盘音频显示为已保存。 */
+    fun discardSegment(segmentId: String) {
+        val index = segments.indexOfLast { it.segmentId == segmentId }
+        if (index >= 0) {
+            segments.removeAt(index)
+            phase = Phase.PROMPT_SELECTED
+        }
+    }
+
     fun confirmIntent(intendedText: String): CaptureSegment? {
         val last = segments.lastOrNull() ?: return null
         if (last.scene != CaptureScene.SPONTANEOUS) return null
@@ -136,6 +141,7 @@ class CaptureSessionController(
 
         val updated = last.copy(
             referenceText = trimmed,
+            intendedText = trimmed,
             referenceSource = ReferenceSource.USER_CONFIRMED,
         )
         segments[segments.lastIndex] = updated
@@ -143,15 +149,8 @@ class CaptureSessionController(
         return updated
     }
 
-    /** 当前是否有待确认意图的片段。 */
-    fun hasPendingIntent(): Boolean {
-        return segments.any {
-            it.scene == CaptureScene.SPONTANEOUS &&
-                it.referenceSource == ReferenceSource.UNCONFIRMED
-        }
-    }
+    fun hasPendingIntent(): Boolean = pendingIntentSegment() != null
 
-    /** 待确认意图的片段。 */
     fun pendingIntentSegment(): CaptureSegment? {
         return segments.lastOrNull {
             it.scene == CaptureScene.SPONTANEOUS &&
@@ -159,7 +158,6 @@ class CaptureSessionController(
         }
     }
 
-    /** 采集是否达到协议要求的最低会话数提示（3 个不同日期）。 */
     fun guidanceNote(): String {
         val count = segments.size
         return when {

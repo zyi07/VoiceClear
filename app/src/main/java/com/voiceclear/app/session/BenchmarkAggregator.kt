@@ -46,6 +46,8 @@ class BenchmarkAggregator(private val windowSize: Int = DEFAULT_WINDOW) {
         val totalMs: Long,
         /** 音频时长，用于算实时率。 */
         val audioMs: Long,
+        /** 会话标识：异步回填必须精确定位，不能误改另一会话的样本。 */
+        val sessionId: String = "",
     ) {
         /** 仅识别阶段的实时率。 */
         val recognitionRtf: Double
@@ -147,6 +149,20 @@ class BenchmarkAggregator(private val windowSize: Int = DEFAULT_WINDOW) {
                 totalMs = if (totalMs > 0) totalMs else last.totalMs,
             ),
         )
+    }
+
+    /** 按 sessionId 回填对应样本；不存在时返回 false，不改动其他会话。 */
+    @Synchronized
+    fun amend(sessionId: String, synthesisMs: Long, playbackMs: Long, totalMs: Long): Boolean {
+        val index = samples.indexOfLast { it.sessionId == sessionId }
+        if (index < 0) return false
+        val current = samples[index]
+        samples[index] = current.copy(
+            synthesisMs = if (synthesisMs > 0) synthesisMs else current.synthesisMs,
+            playbackMs = if (playbackMs > 0) playbackMs else current.playbackMs,
+            totalMs = if (totalMs > 0) totalMs else current.totalMs,
+        )
+        return true
     }
 
     /** 清空所有样本。 */

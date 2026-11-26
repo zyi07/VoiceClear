@@ -14,8 +14,8 @@ import android.os.SystemClock
  * - 冷启动到首帧（ms）
  * - 模型加载耗时（ms）
  * - 端到端识别延迟（ms，按音频秒数折算）
- * - 实时率（RTF）：音频秒数 / 推理秒数，越小越快（1.0 表示与实时持平）
- * - 内存占用（MB）
+ * - 实时率（RTF）：推理秒数 / 音频秒数，越小越快（1.0 表示与实时持平）
+ * - Java 堆快照（MB）：已用、空闲与最大堆；不冒充 native 峰值或系统可用内存
  *
  * 这些数字**只反映本机本模型**，不构成对目标人群识别准确率的任何断言。
  */
@@ -30,8 +30,9 @@ object PerformanceBenchmark {
         val modelLoadMs: Long,
         val recognitionMs: Long,
         val audioSeconds: Double,
-        val peakMemoryMb: Long,
-        val availableMemoryMb: Long,
+        val usedHeapMemoryMb: Long,
+        val freeHeapMemoryMb: Long,
+        val maxHeapMemoryMb: Long,
     ) {
         /**
          * 实时率（Real-Time Factor）。
@@ -65,7 +66,9 @@ object PerformanceBenchmark {
                 "\"recognitionMs\":" + recognitionMs + "," +
                 "\"audioSeconds\":" + audioSeconds + "," +
                 "\"realTimeFactor\":" + String.format(java.util.Locale.US, "%.3f", realTimeFactor) + "," +
-                "\"peakMemoryMb\":" + peakMemoryMb + "," +
+                "\"usedHeapMemoryMb\":" + usedHeapMemoryMb + "," +
+                "\"freeHeapMemoryMb\":" + freeHeapMemoryMb + "," +
+                "\"maxHeapMemoryMb\":" + maxHeapMemoryMb + "," +
                 "\"tier\":\"" + experienceTier + "\"" +
                 "}"
         }
@@ -89,8 +92,9 @@ object PerformanceBenchmark {
             modelLoadMs = modelLoadMs,
             recognitionMs = recognitionMs,
             audioSeconds = audioMs / 1000.0,
-            peakMemoryMb = runtime.maxMemory() / 1024 / 1024,
-            availableMemoryMb = runtime.totalMemory() / 1024 / 1024,
+            usedHeapMemoryMb = (runtime.totalMemory() - runtime.freeMemory()) / 1024 / 1024,
+            freeHeapMemoryMb = runtime.freeMemory() / 1024 / 1024,
+            maxHeapMemoryMb = runtime.maxMemory() / 1024 / 1024,
         )
         DiagnosticLog.i(
             "Benchmark",

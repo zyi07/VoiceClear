@@ -72,6 +72,7 @@ class ErrorCodesTest {
         assertEquals("tts", ErrorCodes.domain(ErrorCodes.TTS_NOT_READY))
         assertEquals("model", ErrorCodes.domain(ErrorCodes.MODEL_NO_NETWORK))
         assertEquals("session", ErrorCodes.domain(ErrorCodes.SESSION_STALE))
+        assertEquals("focus", ErrorCodes.domain(ErrorCodes.FOCUS_DENIED))
     }
 
     @Test

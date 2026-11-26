@@ -1,20 +1,18 @@
 package com.voiceclear.app.engine
 
 import android.content.Context
-import com.voiceclear.app.session.MetricsCollector
 import com.voiceclear.app.session.ErrorCodes
 
 /**
  * 端侧离线中文识别引擎（sherpa-onnx 方案）的接入占位与能力校验。
  *
  * 现状说明（诚实边界）：
- * 本工程当前**未集成** sherpa-onnx 原生库与模型文件。原因有三：
- * 1. 端侧模型需随包分发或在应用内下载，包体与下载策略属于待决策项（技术指导文件 6.4 节）；
- * 2. 模型对**目标人群（听障相关发音不清的普通话成人）**的效果完全未知，
- *    在没有该人群数据前无法判断是否优于通用 ASR（技术指导文件 5.3 节基线顺序）；
- * 3. 本机无 GPU 且磁盘仅余约 16 GB，训练与大批量评测不适合在此环境进行。
+ * **本类自身仍是未实现占位**：即使目录非空也只返回 ERR_MODEL_INVALID，不提供识别结果。
+ * 这不表示整个工程未集成 sherpa-onnx：真实端侧实现已单独落在
+ * [SenseVoiceRecognitionEngine]，由 [RecognitionEngineFactory] 在模型校验通过后创建。
+ * 本旧类只用于保留 ONNX_OFFLINE 选型契约，不得把它或 SenseVoice 的能力混为一谈。
  *
- * 因此本类只负责：
+ * 本类保留原因：
  * - 声明该方案的引擎能力，便于上层在选型、统计与降级时正确区分；
  * - 在模型包缺失或校验失败时给出明确的、可处理的失败，而不是崩溃或静默降级；
  * - 保留与识别引擎契约一致的调用面，使后续接入真实模型时无需改动 UI 与状态机。
@@ -54,6 +52,7 @@ class OnnxOfflineRecognitionEngine(
                 normalizedText = "",
                 confidence = null,
                 warnings = listOf(ERR_MODEL_NOT_AVAILABLE),
+                errorCode = ERR_MODEL_NOT_AVAILABLE,
             )
         }
         // 接入真实模型后在此调用 sherpa-onnx 离线识别接口。
@@ -64,6 +63,7 @@ class OnnxOfflineRecognitionEngine(
             normalizedText = "",
             confidence = null,
             warnings = listOf(ERR_MODEL_INVALID),
+            errorCode = ERR_MODEL_INVALID,
         )
     }
 

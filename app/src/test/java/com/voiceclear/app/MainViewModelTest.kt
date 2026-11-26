@@ -53,11 +53,13 @@ class MainViewModelTest {
     }
 
     @Test
-    fun `start recording without permission reports failure`() {
+    fun `start recording without model fails closed before starting session`() {
         val viewModel = createViewModel()
-        // 默认没有录音权限
         val failure = viewModel.startRecording()
-        assertNotNull("无权限时应返回错误码", failure)
+        assertEquals(com.voiceclear.app.session.ErrorCodes.ASR_MODEL_MISSING, failure)
+        assertEquals(SessionState.IDLE, viewModel.sessionController.state.value)
+        assertNull(viewModel.sessionController.sessionId)
+        assertNull(viewModel.lastRecognition)
     }
 
     @Test
@@ -69,20 +71,19 @@ class MainViewModelTest {
     }
 
     @Test
-    fun `state change callback can be registered`() {
+    fun `ui events and state are lifecycle safe streams`() {
         val viewModel = createViewModel()
-        var received: SessionState? = null
-        viewModel.onStateChanged = { received = it }
-        viewModel.onStateChanged?.invoke(SessionState.PLAYING)
-        assertEquals(SessionState.PLAYING, received)
+        assertNotNull(viewModel.recognitionEvents)
+        assertNotNull(viewModel.playbackEvents)
+        assertNotNull(viewModel.engineRevision)
     }
 
     @Test
-    fun `mark stage records elapsed time`() {
+    fun `mark stage without active session does not fabricate metrics`() {
         val viewModel = createViewModel()
         viewModel.markStage("capture", 123L)
-        // 该值会被 recordMetrics 消费，这里只验证不抛异常
-        assertTrue(true)
+        viewModel.recordMetrics(failed = false, cancelled = true)
+        assertTrue(viewModel.metricsCollector.snapshot().isEmpty())
     }
 
     @Test
@@ -95,6 +96,18 @@ class MainViewModelTest {
     fun `benchmark is null before any recognition`() {
         val viewModel = createViewModel()
         assertNull(viewModel.lastBenchmark)
+    }
+
+    @Test
+    fun `busy audio source change is rejected without persisting`() {
+        val viewModel = createViewModel()
+        val original = viewModel.settings.audioSource
+        val replacement = com.voiceclear.app.engine.AudioSourceOption.ALL.first { it != original }
+        viewModel.sessionController.startSession()
+
+        assertFalse(viewModel.applyAudioSource(replacement))
+        assertEquals(original, viewModel.settings.audioSource)
+        viewModel.cancelSession()
     }
 
     @Test

@@ -29,12 +29,13 @@ class FakeSpeechEnginesTest {
     }
 
     @Test
-    fun `recognition may report unknown confidence`() = runTest {
-        val engine = FakeRecognitionEngine(confidence = null)
+    fun `default recognition does not invent confidence`() = runTest {
+        val engine = FakeRecognitionEngine()
         val result = engine.recognize(
             RecognitionRequest("s1", segment, "fake-0.1.0"),
         )
         assertNull(result.confidence)
+        assertTrue(result.isSuccess)
     }
 
     @Test
@@ -52,5 +53,6 @@ class FakeSpeechEnginesTest {
         assertEquals("s1", result.audio?.sessionId)
         assertEquals(16_000, result.audio?.sampleRate)
         assertTrue(result.durationMs >= 0)
+        assertEquals(result.audio?.durationMs, result.durationMs)
     }
 }

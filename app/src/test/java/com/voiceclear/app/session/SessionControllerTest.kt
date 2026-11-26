@@ -113,4 +113,42 @@ class SessionControllerTest {
         assertNull(controller.sessionId)
         assertEquals(SessionState.IDLE, controller.state.value)
     }
+
+    @Test
+    fun `cancel invalidates late result even with the same id`() {
+        val controller = controller()
+        controller.startSession()
+        val token = controller.currentToken()!!
+        assertTrue(controller.stopCapture(token))
+        assertTrue(controller.cancel(token))
+        assertFalse(controller.isCurrent(token))
+        assertFalse(controller.onRecognitionReady(token))
+        assertEquals(SessionState.CANCELLED, controller.state.value)
+    }
+
+    @Test
+    fun `failure invalidates late result`() {
+        val controller = controller()
+        controller.startSession()
+        val token = controller.currentToken()!!
+        assertTrue(controller.fail(token, ProcessingStage.CAPTURE, "capture_failed"))
+        assertFalse(controller.isCurrent(token.sessionId, token.generation))
+        assertFalse(controller.stopCapture(token))
+    }
+
+    @Test
+    fun `generation separates repeated ids across sessions`() {
+        val controller = controller()
+        controller.startSession()
+        val old = controller.currentToken()!!
+        controller.cancel(old)
+        assertTrue(controller.startSession())
+        val current = controller.currentToken()!!
+        assertEquals(old.sessionId, current.sessionId)
+        assertTrue(current.generation > old.generation)
+        assertFalse(controller.isCurrent(old))
+        assertFalse(controller.stopCapture(old))
+        assertEquals(SessionState.RECORDING, controller.state.value)
+        assertTrue(controller.isCurrent(current))
+    }
 }

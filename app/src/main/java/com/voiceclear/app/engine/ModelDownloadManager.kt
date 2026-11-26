@@ -6,26 +6,24 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 端侧模型下载管理器（多源降级）。
  *
- * 模型体积较大（SenseVoice int8 约 239 MB），不适合放进 APK：
- * - APK 会膨胀到 300 MB 以上，安装与更新都很痛苦；
- * - 用户不升级模型就一直要下载。
- * 因此改为**首次使用时按需下载**到应用私有目录。
- *
- * 多源降级：国内网络环境下 GitHub Release 常常不可达，
- * 因此按顺序尝试多个来源（国内源优先），任一成功即停止。
- *
- * 下载支持断点续传（Range 请求）：大文件传到一半失败后可接着传，
- * 不用从头再来——这对移动网络尤其重要。
+ * 所有下载先写入独立 staging 目录，大小与两个 SHA-256 全部通过后才原子切换为正式目录。
+ * 同一模型目录在进程内共享互斥锁，避免多个 Activity/线程写同一 .part 或归档。
+ * isReady 每次复验文件类型、精确大小和哈希，损坏内容不会永久跳过下载。
  */
-class ModelDownloadManager(private val context: Context) {
+class ModelDownloadManager internal constructor(
+    private val context: Context,
+    private val sources: List<ModelSource>,
+) {
+    constructor(context: Context) : this(context, SOURCES)
 
     companion object {
         const val MODEL_DIR_NAME = "asr_model"
-
         const val ARCHIVE_MODEL_NAME = "model.int8.onnx"
         const val ARCHIVE_TOKENS_NAME = "tokens.txt"
 
@@ -33,17 +31,8 @@ class ModelDownloadManager(private val context: Context) {
         const val READ_TIMEOUT_MS = 60_000
         const val MAX_RETRIES_PER_SOURCE = 2
 
-        /**
-         * 模型来源列表，按优先级排列。
-         *
-         * 1. ModelScope（魔搭，国内直连，实测约 6 MB/s，优先）
-         * 2. GitHub Release（官方归档，海外网络更快）
-         *
-         * 注意：两源的模型是同一 SenseVoice 的不同量化导出。
-         * 已实测确认：图结构、输入输出签名、词表（tokens.txt 字节完全一致）均相同，
-         * 仅权重数值有细微差异，不影响可用性。
-         * 因此代码不能硬编码某一份的大小，必须按各源分别校验。
-         */
+        private val DOWNLOAD_LOCKS = ConcurrentHashMap<String, Any>()
+
         val SOURCES: List<ModelSource> = listOf(
             ModelSource(
                 id = "modelscope",
@@ -71,7 +60,6 @@ class ModelDownloadManager(private val context: Context) {
                 expectedModelBytes = 163002883L,
                 expectedTokensBytes = 315894L,
                 kind = ModelSource.Kind.ARCHIVE,
-                // 归档内的 model.int8.onnx 与 tokens.txt 的校验和
                 expectedModelSha256 =
                     "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51",
                 expectedTokensSha256 =
@@ -80,62 +68,67 @@ class ModelDownloadManager(private val context: Context) {
         )
     }
 
+    private val downloadLock = DOWNLOAD_LOCKS.computeIfAbsent(modelDir().absolutePath) { Any() }
+
     /** 模型在应用私有目录中的位置。 */
     fun modelDir(): File = File(context.filesDir, MODEL_DIR_NAME)
 
-    /** 模型是否已就绪。 */
-    fun isReady(): Boolean {
+    /** 模型是否已就绪：必须匹配至少一个可信来源的精确大小与两个 SHA-256。 */
+    fun isReady(): Boolean = synchronized(downloadLock) { isReadyLocked() }
+
+    private fun isReadyLocked(): Boolean {
         val dir = modelDir()
-        return File(dir, SenseVoiceRecognitionEngine.MODEL_FILE).exists() &&
-            File(dir, SenseVoiceRecognitionEngine.TOKENS_FILE).exists()
+        val model = File(dir, SenseVoiceRecognitionEngine.MODEL_FILE)
+        val tokens = File(dir, SenseVoiceRecognitionEngine.TOKENS_FILE)
+        return sources.any { source -> verifyFiles(source, model, tokens, logFailures = false) }
     }
 
-    /** 已下载模型的占用（字节）。 */
     fun diskUsage(): Long {
         val dir = modelDir()
         if (!dir.exists()) return 0L
         return dir.listFiles()?.sumOf { it.length() } ?: 0L
     }
 
-    /**
-     * 下载模型，自动在多个来源之间降级。
-     *
-     * @param onProgress 进度回调：(已下载字节, 总字节)
-     * @param onSourceChange 切换来源时的回调：(来源描述)
-     * @return true 表示模型已就绪
-     */
+    /** 下载并校验模型；仅正式目录完整可用时返回 true。 */
     fun download(
         onProgress: (Long, Long) -> Unit = { _, _ -> },
         onSourceChange: (String) -> Unit = {},
-    ): Boolean {
-        if (isReady()) {
-            DiagnosticLog.i("ModelDownload", "模型已存在，跳过下载")
+    ): Boolean = synchronized(downloadLock) {
+        if (isReadyLocked()) {
+            DiagnosticLog.i("ModelDownload", "模型已存在且复验通过，跳过下载")
             return true
         }
 
-        val dir = modelDir()
-        if (!dir.exists() && !dir.mkdirs()) {
-            DiagnosticLog.e("ModelDownload", "无法创建模型目录: " + dir.absolutePath)
-            return false
-        }
-
-        for (source in SOURCES) {
+        for (source in sources) {
             DiagnosticLog.i(
                 "ModelDownload",
                 "尝试来源: " + source.id + " (" + source.displayName + ")",
             )
             onSourceChange(source.displayName)
-
-            val ok = when (source.kind) {
-                ModelSource.Kind.ARCHIVE -> downloadFromArchive(source, dir, onProgress)
-                ModelSource.Kind.DIRECT -> downloadDirect(source, dir, onProgress)
+            val staging = createStagingDirectory()
+            if (staging == null) {
+                DiagnosticLog.e("ModelDownload", "无法创建 staging 目录")
+                continue
             }
 
-            if (ok) {
-                DiagnosticLog.i("ModelDownload", "来源 " + source.id + " 下载成功")
+            val ok = try {
+                when (source.kind) {
+                    ModelSource.Kind.ARCHIVE -> downloadFromArchive(source, staging, onProgress)
+                    ModelSource.Kind.DIRECT -> downloadDirect(source, staging, onProgress)
+                }
+            } catch (error: Throwable) {
+                DiagnosticLog.e(
+                    "ModelDownload",
+                    "来源异常: " + (error.message ?: error.javaClass.name),
+                )
+                false
+            }
+
+            if (ok && publishModel(staging, modelDir())) {
+                DiagnosticLog.i("ModelDownload", "来源 " + source.id + " 下载并安装成功")
                 return true
             }
-
+            staging.deleteRecursively()
             DiagnosticLog.w("ModelDownload", "来源 " + source.id + " 失败，尝试下一个")
         }
 
@@ -143,7 +136,30 @@ class ModelDownloadManager(private val context: Context) {
         return false
     }
 
-    /** 直接下载两个文件（ModelScope 这种目录式仓库）。 */
+    private fun createStagingDirectory(): File? {
+        val parent = modelDir().parentFile ?: return null
+        val staging = File(parent, MODEL_DIR_NAME + ".staging-" + UUID.randomUUID())
+        return staging.takeIf { staging.mkdirs() }
+    }
+
+    /** 用同文件系统 rename 发布；失败时恢复旧目录。 */
+    private fun publishModel(staging: File, target: File): Boolean {
+        val parent = target.parentFile ?: return false
+        val backup = File(parent, MODEL_DIR_NAME + ".backup-" + UUID.randomUUID())
+        if (target.exists() && !target.renameTo(backup)) {
+            DiagnosticLog.e("ModelDownload", "无法移走旧模型目录")
+            return false
+        }
+        if (staging.renameTo(target)) {
+            backup.deleteRecursively()
+            return true
+        }
+        if (backup.exists()) backup.renameTo(target)
+        DiagnosticLog.e("ModelDownload", "模型目录原子发布失败")
+        return false
+    }
+
+    /** 直接下载两个文件到 staging，不在正式文件上原地覆盖。 */
     private fun downloadDirect(
         source: ModelSource,
         targetDir: File,
@@ -156,189 +172,137 @@ class ModelDownloadManager(private val context: Context) {
             url = source.modelUrl,
             target = modelTarget,
             expectedBytes = source.expectedModelBytes,
-            minAcceptRatio = 0.95,
             onProgress = onProgress,
         )
-        if (!modelOk) {
-            modelTarget.delete()
-            return false
-        }
+        if (!modelOk) return false
 
         val tokensOk = downloadFile(
             url = source.tokensUrl,
             target = tokensTarget,
             expectedBytes = source.expectedTokensBytes,
-            minAcceptRatio = 0.99,
             onProgress = { _, _ -> },
         )
-        if (!tokensOk) {
-            tokensTarget.delete()
-            modelTarget.delete()
-            return false
-        }
+        if (!tokensOk) return false
 
-        // 完整性校验：下载完成不等于内容正确。
-        // 239 MB 的文件在移动网络下可能截断，也可能被中间设备替换。
-        if (!verifyChecksums(source, modelTarget, tokensTarget)) {
-            modelTarget.delete()
-            tokensTarget.delete()
-            return false
-        }
-
-        return true
+        return verifyChecksums(source, modelTarget, tokensTarget)
     }
 
-    /**
-     * 校验已下载文件的 SHA-256。
-     *
-     * **策略**：区分两种不符：
-     * - 大小也不符 → 一定是下载损坏或被替换，**拒绝**（删除并降级到下一个源）；
-     * - 大小相符但校验和不同 → 上游可能更新了模型版本，
-     *   此时**放行**并记警告。硬性拒绝会导致上游一更新就完全无法下载模型。
-     *
-     * 这是刻意的取舍：宁可接受一个版本变化的新模型，也不要因为
-     * 校验和过期而让用户彻底用不了。
-     */
-    private fun verifyChecksums(
+    /** 大小和任一 SHA-256 不符都失败关闭，不接受“同大小但哈希不同”。 */
+    private fun verifyChecksums(source: ModelSource, modelFile: File, tokensFile: File): Boolean =
+        verifyFiles(source, modelFile, tokensFile, logFailures = true).also { verified ->
+            if (verified) DiagnosticLog.i("ModelDownload", "大小与校验和全部通过, source=" + source.id)
+        }
+
+    private fun verifyFiles(
         source: ModelSource,
         modelFile: File,
         tokensFile: File,
+        logFailures: Boolean,
     ): Boolean {
-        if (source.expectedModelSha256.isEmpty() &&
-            source.expectedTokensSha256.isEmpty()
-        ) {
-            return true
-        }
-
-        val modelMatches = FileIntegrity.matches(modelFile, source.expectedModelSha256)
-        if (!modelMatches) {
-            val sizeOk = modelFile.length() == source.expectedModelBytes
-            if (!sizeOk) {
+        val modelSizeOk = modelFile.isFile && modelFile.length() == source.expectedModelBytes
+        val tokensSizeOk = tokensFile.isFile && tokensFile.length() == source.expectedTokensBytes
+        if (!modelSizeOk || !tokensSizeOk) {
+            if (logFailures) {
                 DiagnosticLog.e(
                     "ModelDownload",
-                    "模型文件损坏, source=" + source.id + ", 大小=" + modelFile.length() +
-                        " 期望=" + source.expectedModelBytes,
+                    "文件大小不符, source=" + source.id +
+                        ", model=" + modelFile.length() + "/" + source.expectedModelBytes +
+                        ", tokens=" + tokensFile.length() + "/" + source.expectedTokensBytes,
                 )
-                return false
             }
-            DiagnosticLog.w(
+            return false
+        }
+        val modelMatches = FileIntegrity.matches(modelFile, source.expectedModelSha256)
+        val tokensMatches = FileIntegrity.matches(tokensFile, source.expectedTokensSha256)
+        if ((!modelMatches || !tokensMatches) && logFailures) {
+            DiagnosticLog.e(
                 "ModelDownload",
-                "模型校验和与记录不符但大小一致（疑似上游更新）, source=" + source.id +
-                    ", 实际=" + FileIntegrity.sha256(modelFile).take(16) + "...",
+                "SHA-256 不符, source=" + source.id +
+                    ", modelMatches=" + modelMatches + ", tokensMatches=" + tokensMatches,
             )
         }
-
-        if (!FileIntegrity.matches(tokensFile, source.expectedTokensSha256)) {
-            DiagnosticLog.w(
-                "ModelDownload",
-                "词表校验和与记录不符（疑似上游更新）, source=" + source.id,
-            )
-        }
-
-        if (modelMatches) {
-            DiagnosticLog.i("ModelDownload", "校验通过, source=" + source.id)
-        }
-        return true
+        return modelMatches && tokensMatches
     }
 
-    /** 下载 tar.bz2 归档并解压（GitHub Release 这种单文件发布）。 */
+    /** 归档下载、HTTP/截断重试、解压和校验均在 staging 中完成。 */
     private fun downloadFromArchive(
         source: ModelSource,
         targetDir: File,
         onProgress: (Long, Long) -> Unit,
     ): Boolean {
-        val archive = File(context.cacheDir, "sensevoice.tar.bz2")
-        var connection: HttpURLConnection? = null
-
-        return try {
-            connection = (URL(source.modelUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                requestMethod = "GET"
-                instanceFollowRedirects = true
+        repeat(MAX_RETRIES_PER_SOURCE) { attempt ->
+            val archive = try {
+                File.createTempFile("sensevoice-" + attempt + "-", ".tar.bz2", context.cacheDir)
+            } catch (error: Throwable) {
+                DiagnosticLog.e("ModelDownload", "无法创建归档临时文件: " + error.message)
+                return false
             }
-            val totalBytes = connection.contentLengthLong.takeIf { it > 0 } ?: 0L
-            connection.inputStream.use { input ->
-                FileOutputStream(archive).use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    var downloaded = 0L
-                    var read = input.read(buffer)
-                    while (read > 0) {
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        onProgress(downloaded, totalBytes)
-                        read = input.read(buffer)
-                    }
-                }
+            try {
+                val downloaded = downloadFile(
+                    url = source.modelUrl,
+                    target = archive,
+                    expectedBytes = 0L,
+                    onProgress = onProgress,
+                )
+                if (downloaded && extractModelFiles(archive, targetDir, source)) return true
+                targetDir.deleteRecursively()
+                if (!targetDir.mkdirs()) return false
+            } finally {
+                archive.delete()
+                File(archive.absolutePath + ".part").delete()
             }
-
-            DiagnosticLog.i(
-                "ModelDownload",
-                "归档下载完成, 大小=" + archive.length() + " 字节, 开始解压",
-            )
-            extractModelFiles(archive, targetDir, source)
-        } catch (error: Throwable) {
-            DiagnosticLog.e(
-                "ModelDownload",
-                "归档下载失败: " + (error.message ?: error.javaClass.name),
-            )
-            false
-        } finally {
-            runCatching { connection?.disconnect() }
-            archive.delete()
         }
+        return false
     }
 
-    /** 下载单个文件，支持断点续传与重试。 */
+    /** 下载单个文件；可重试 HTTP 与截断，支持 Range 续传及 416 重新开始。 */
     private fun downloadFile(
         url: String,
         target: File,
         expectedBytes: Long,
-        minAcceptRatio: Double,
         onProgress: (Long, Long) -> Unit,
     ): Boolean {
+        val partial = File(target.absolutePath + ".part")
         repeat(MAX_RETRIES_PER_SOURCE) { attempt ->
-            val partial = File(target.absolutePath + ".part")
-            val existing = if (partial.exists()) partial.length() else 0L
-
             var connection: HttpURLConnection? = null
             try {
+                if (expectedBytes > 0 && partial.length() > expectedBytes) partial.delete()
+                val existing = if (partial.exists()) partial.length() else 0L
                 connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                requestMethod = "GET"
-                instanceFollowRedirects = true
-                if (existing > 0) {
-                    setRequestProperty("Range", "bytes=" + existing + "-")
+                    connectTimeout = CONNECT_TIMEOUT_MS
+                    readTimeout = READ_TIMEOUT_MS
+                    requestMethod = "GET"
+                    instanceFollowRedirects = true
+                    if (existing > 0) setRequestProperty("Range", "bytes=" + existing + "-")
                 }
-            }
 
                 val code = connection.responseCode
-                // 服务端不支持续传时会返回 200，此时需要从头写。
-                val resuming = code == HttpURLConnection.HTTP_PARTIAL && existing > 0
+                if (code == 416) {
+                    DiagnosticLog.w("ModelDownload", "HTTP 416，清除无效断点后重试")
+                    partial.delete()
+                    return@repeat
+                }
                 if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_PARTIAL) {
                     DiagnosticLog.w(
                         "ModelDownload",
-                        "HTTP " + code + ", 放弃本次尝试, url=" + url.take(80),
+                        "HTTP " + code + ", 尝试 " + (attempt + 1) + ", url=" + url.take(80),
                     )
+                    if (isRetryableHttpStatus(code)) return@repeat
                     return false
                 }
-
-                val totalBytes = (connection.contentLengthLong + (if (resuming) existing else 0L))
-                    .takeIf { it > 0 } ?: expectedBytes
-
-                val append = resuming
-                if (resuming) {
-                    DiagnosticLog.i(
-                        "ModelDownload",
-                        "断点续传, 已下载=" + existing + " 字节",
-                    )
+                if (code == HttpURLConnection.HTTP_PARTIAL && existing == 0L) {
+                    DiagnosticLog.w("ModelDownload", "无断点却收到 HTTP 206，拒绝并重试")
+                    return@repeat
                 }
 
+                // 服务端忽略 Range 返回 200 时必须从头覆盖，不能追加。
+                val resuming = code == HttpURLConnection.HTTP_PARTIAL && existing > 0
+                val totalBytes = (connection.contentLengthLong + (if (resuming) existing else 0L))
+                    .takeIf { it > 0 } ?: expectedBytes
                 connection.inputStream.use { input ->
-                    FileOutputStream(partial, append).use { output ->
+                    FileOutputStream(partial, resuming).use { output ->
                         val buffer = ByteArray(64 * 1024)
-                        var downloaded = if (append) existing else 0L
+                        var downloaded = if (resuming) existing else 0L
                         var read = input.read(buffer)
                         while (read > 0) {
                             output.write(buffer, 0, read)
@@ -350,15 +314,19 @@ class ModelDownloadManager(private val context: Context) {
                 }
 
                 val actual = partial.length()
-                if (expectedBytes > 0 && actual < (expectedBytes * minAcceptRatio).toLong()) {
+                if (expectedBytes > 0 && actual != expectedBytes) {
                     DiagnosticLog.w(
                         "ModelDownload",
-                        "文件大小不符: " + actual + " < " + expectedBytes,
+                        "文件大小不符，准备重试: " + actual + " != " + expectedBytes,
                     )
-                    return false
+                    if (actual > expectedBytes) partial.delete()
+                    return@repeat
                 }
-
-                partial.renameTo(target)
+                if (target.exists() && !target.delete()) return@repeat
+                if (!partial.renameTo(target)) {
+                    DiagnosticLog.w("ModelDownload", "临时文件改名失败，准备重试")
+                    return@repeat
+                }
                 return true
             } catch (error: Throwable) {
                 DiagnosticLog.w(
@@ -366,15 +334,17 @@ class ModelDownloadManager(private val context: Context) {
                     "下载尝试 " + (attempt + 1) + " 失败: " +
                         (error.message ?: error.javaClass.simpleName),
                 )
-            }
-            finally {
+            } finally {
                 runCatching { connection?.disconnect() }
             }
         }
         return false
     }
 
-    /** 从归档中提取模型与词表。 */
+    private fun isRetryableHttpStatus(code: Int): Boolean =
+        code == HttpURLConnection.HTTP_CLIENT_TIMEOUT || code == 429 || code >= 500
+
+    /** 从归档提取到 staging，并对两个文件执行同一套严格校验。 */
     private fun extractModelFiles(
         archive: File,
         targetDir: File,
@@ -386,7 +356,6 @@ class ModelDownloadManager(private val context: Context) {
             ).redirectErrorStream(true).start()
             val output = process.inputStream.bufferedReader().use { it.readText() }
             val exitCode = process.waitFor()
-
             if (exitCode != 0) {
                 DiagnosticLog.e("ModelDownload", "解压失败: " + output.take(300))
                 return false
@@ -395,39 +364,20 @@ class ModelDownloadManager(private val context: Context) {
             val extractedModel = targetDir.listFiles()?.firstOrNull { dir ->
                 dir.isDirectory && File(dir, ARCHIVE_MODEL_NAME).exists()
             }
-
             if (extractedModel == null) {
                 DiagnosticLog.e("ModelDownload", "归档内未找到模型文件")
                 return false
             }
-
             val modelFile = File(extractedModel, ARCHIVE_MODEL_NAME)
             val tokensFile = File(extractedModel, ARCHIVE_TOKENS_NAME)
-
-            if (modelFile.length() < (source.expectedModelBytes * 0.9).toLong()) {
-                DiagnosticLog.e("ModelDownload", "模型文件大小异常: " + modelFile.length())
-                return false
-            }
-
             val installedModel = File(targetDir, SenseVoiceRecognitionEngine.MODEL_FILE)
             val installedTokens = File(targetDir, SenseVoiceRecognitionEngine.TOKENS_FILE)
             modelFile.copyTo(installedModel, overwrite = true)
             tokensFile.copyTo(installedTokens, overwrite = true)
-
-            // 归档同样做完整性校验
-            if (!verifyChecksums(source, installedModel, installedTokens)) {
-                installedModel.delete()
-                installedTokens.delete()
-                extractedModel.deleteRecursively()
-                return false
-            }
+            if (!verifyChecksums(source, installedModel, installedTokens)) return false
 
             extractedModel.deleteRecursively()
-
-            DiagnosticLog.i(
-                "ModelDownload",
-                "模型安装完成, 目录=" + targetDir.absolutePath + ", 占用=" + diskUsage() + " 字节",
-            )
+            DiagnosticLog.i("ModelDownload", "模型 staging 校验完成")
             true
         } catch (error: Throwable) {
             DiagnosticLog.e(
@@ -438,9 +388,11 @@ class ModelDownloadManager(private val context: Context) {
         }
     }
 
-    /** 删除模型，回收磁盘占用。 */
+    /** 删除正式模型；与下载使用同一互斥锁。 */
     fun deleteModel() {
-        modelDir().deleteRecursively()
-        DiagnosticLog.i("ModelDownload", "模型已删除")
+        synchronized(downloadLock) {
+            modelDir().deleteRecursively()
+            DiagnosticLog.i("ModelDownload", "模型已删除")
+        }
     }
 }

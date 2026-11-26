@@ -19,8 +19,9 @@ class PerformanceBenchmarkTest {
             modelLoadMs = 0L,
             recognitionMs = 500L,
             audioSeconds = 2.0,
-            peakMemoryMb = 384L,
-            availableMemoryMb = 100L,
+            usedHeapMemoryMb = 384L,
+            freeHeapMemoryMb = 100L,
+            maxHeapMemoryMb = 512L,
         )
         // 0.5s 音频用 0.5s 识别完 → 实时率 1.0
         assertEquals(0.25, record.realTimeFactor, 0.001)
@@ -36,8 +37,9 @@ class PerformanceBenchmarkTest {
             modelLoadMs = 0L,
             recognitionMs = 500L,
             audioSeconds = 0.0,
-            peakMemoryMb = 384L,
-            availableMemoryMb = 100L,
+            usedHeapMemoryMb = 384L,
+            freeHeapMemoryMb = 100L,
+            maxHeapMemoryMb = 512L,
         )
         assertEquals(0.0, record.realTimeFactor, 0.0001)
         assertEquals("未知", record.experienceTier)
@@ -54,8 +56,9 @@ class PerformanceBenchmarkTest {
                 modelLoadMs = 0L,
                 recognitionMs = recognitionMs,
                 audioSeconds = audioSeconds,
-                peakMemoryMb = 384L,
-                availableMemoryMb = 100L,
+                usedHeapMemoryMb = 384L,
+                freeHeapMemoryMb = 100L,
+                maxHeapMemoryMb = 512L,
             ).experienceTier
         }
 
@@ -79,8 +82,9 @@ class PerformanceBenchmarkTest {
             modelLoadMs = 3000L,
             recognitionMs = 250L,
             audioSeconds = 2.5,
-            peakMemoryMb = 384L,
-            availableMemoryMb = 120L,
+            usedHeapMemoryMb = 384L,
+            freeHeapMemoryMb = 120L,
+            maxHeapMemoryMb = 512L,
         )
         val json = record.toJson()
         assertTrue(json.startsWith("{"))
@@ -99,7 +103,9 @@ class PerformanceBenchmarkTest {
             coldStartMs = 900L,
         )
         assertEquals(0.2, record.realTimeFactor, 0.01)
-        assertTrue(record.peakMemoryMb > 0)
+        assertTrue(record.maxHeapMemoryMb > 0)
+        assertTrue(record.usedHeapMemoryMb >= 0)
+        assertTrue(record.freeHeapMemoryMb >= 0)
         assertTrue(record.deviceModel.isNotBlank())
     }
 

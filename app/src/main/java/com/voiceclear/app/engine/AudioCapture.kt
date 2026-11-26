@@ -1,68 +1,82 @@
 package com.voiceclear.app.engine
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
-import android.media.MediaRecorder
 import androidx.core.content.ContextCompat
 import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.ErrorCodes
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** 可替换的 AudioRecord 测试缝；生产实现仍只使用系统 AudioRecord。 */
+internal interface CaptureRecorder {
+    val state: Int
+    val recordingState: Int
+    fun startRecording()
+    fun stop()
+    fun read(buffer: ByteArray, offset: Int, size: Int): Int
+    fun release()
+}
+
+internal fun interface CaptureRecorderFactory {
+    fun create(source: Int, sampleRate: Int, channel: Int, format: Int, bufferSize: Int): CaptureRecorder
+}
+
 /**
  * 麦克风采集器。
  *
- * API 来源（本地 SDK /opt/android-sdk/platforms/android-34，javap 实测签名）：
- * - android.media.AudioRecord(int, int, int, int, int)
- * - android.media.AudioRecord.getMinBufferSize(int, int, int)
- * - android.media.AudioRecord.startRecording() / stop() / read(byte[], int, int) / release()
- * - android.media.AudioRecord.STATE_INITIALIZED / RECORDSTATE_RECORDING
- * - android.media.AudioFormat.ENCODING_PCM_16BIT = 2
- * - android.media.AudioFormat.CHANNEL_IN_MONO = 16
- * - android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION
+ * 每次会话都有明确的 Recording/Completed/Failed/Stopped 状态。自动停止、读取失败、
+ * 显式停止和取消都经过同一个幂等清理入口；读取或 join 失败不会返回截断的 Success。
  *
- * 首版使用「点击开始、再次点击结束」的显式端点，不使用 VAD 自动切分，
- * 避免把长停顿、重复与阻塞误判为结束（技术指导文件 5.5 节）。
- *
- * **重要设计（曾因实现错误导致 60 秒空转）**：
- * 录音必须**立即开始**，由调用方主动调用 [stop] 结束。
- * 早期实现把采集写成阻塞方法 `capture()`，在后台线程里一直读到 60 秒上限，
- * 造成「用户以为已停止，实际还在录满 60 秒」，识别结果自然是空的。
- * 现在改为 [start] / [stop] 两段式：start 立即返回并开始后台读取，
- * stop 停止读取并返回音频。
+ * API 来源：本地 /opt/android-sdk/platforms/android-36/android.jar（javap）。
+ * AudioRecord(int,int,int,int,int)、getMinBufferSize、startRecording/stop/read/release、
+ * STATE_INITIALIZED/RECORDSTATE_RECORDING 均兼容 minSdk 26。
  */
 class AudioCapture(
     private val context: Context,
     private val sampleRate: Int = DEFAULT_SAMPLE_RATE,
     private val sourceOption: AudioSourceOption = AudioSourceOption.DEFAULT,
 ) {
+    internal constructor(
+        context: Context,
+        sampleRate: Int = DEFAULT_SAMPLE_RATE,
+        sourceOption: AudioSourceOption = AudioSourceOption.DEFAULT,
+        recorderFactory: CaptureRecorderFactory,
+        minBufferSizeProvider: () -> Int,
+        clock: () -> Long,
+        joinTimeoutMs: Long = 2_000L,
+    ) : this(context, sampleRate, sourceOption) {
+        this.recorderFactory = recorderFactory
+        this.minBufferSizeProvider = minBufferSizeProvider
+        this.clock = clock
+        this.joinTimeoutMs = joinTimeoutMs
+    }
 
     companion object {
         const val DEFAULT_SAMPLE_RATE = 16_000
 
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-
         private const val BUFFER_SIZE_FACTOR = 4
 
         /** 单次录音上限，防止用户忘记停止导致无限占用内存。 */
         const val MAX_DURATION_MS = 30_000L
 
-        /** 低于此时长视为没有有效语音。 */
         private const val MIN_VOICE_DURATION_MS = 200L
 
-        // 统一错误码定义见 session/ErrorCodes.kt，这里保留别名以兼容既有调用点。
         const val ERR_PERMISSION_DENIED = ErrorCodes.CAPTURE_PERMISSION_DENIED
         const val ERR_INVALID_BUFFER = ErrorCodes.CAPTURE_INVALID_BUFFER
         const val ERR_ILLEGAL_ARGUMENT = ErrorCodes.CAPTURE_ILLEGAL_ARGUMENT
         const val ERR_NOT_INITIALIZED = ErrorCodes.CAPTURE_NOT_INITIALIZED
         const val ERR_NOT_RECORDING = ErrorCodes.CAPTURE_NOT_RECORDING
         const val ERR_ILLEGAL_STATE = ErrorCodes.CAPTURE_ILLEGAL_STATE
+        const val ERR_READ_FAILED = "capture_read_failed"
+        const val ERR_JOIN_TIMEOUT = "capture_join_timeout"
 
-        /** 质量标记（不是错误码）：记录在数据集中，供后续质量分析。 */
         const val FLAG_EMPTY_CAPTURE = ErrorCodes.CAPTURE_EMPTY
         const val FLAG_TOO_SHORT = ErrorCodes.CAPTURE_TOO_SHORT
     }
@@ -72,72 +86,105 @@ class AudioCapture(
         data class Failure(val code: String) : CaptureResult
     }
 
-    /** 正在录音的会话。 */
-    private class Session(
-        val recorder: AudioRecord,
+    private enum class SessionState {
+        RECORDING,
+        COMPLETED,
+        FAILED,
+        STOPPED,
+    }
+
+    private inner class Session(
+        val sessionId: String,
+        val recorder: CaptureRecorder,
         val buffer: ByteArray,
         val samples: ByteArrayOutputStream,
         val startedAt: Long,
-        val stopRequested: AtomicBoolean,
-    )
+    ) {
+        val stopRequested = AtomicBoolean(false)
+        private val cleanedUp = AtomicBoolean(false)
 
+        @Volatile
+        var state = SessionState.RECORDING
+
+        @Volatile
+        var failureCode: String? = null
+
+        @Volatile
+        var readerThread: Thread? = null
+
+        fun fail(code: String) {
+            if (state == SessionState.RECORDING) {
+                failureCode = code
+                state = SessionState.FAILED
+            }
+        }
+
+        fun finishFromReader() {
+            if (state == SessionState.RECORDING) {
+                state = if (stopRequested.get()) SessionState.STOPPED else SessionState.COMPLETED
+            }
+        }
+
+        /** 所有退出路径共用的幂等资源清理。 */
+        fun cleanup() {
+            if (!cleanedUp.compareAndSet(false, true)) return
+            runCatching { recorder.stop() }
+            runCatching { recorder.release() }
+        }
+    }
+
+    // 工厂只在 start() 的两处显式权限检查后调用，且构造/启动均捕获 SecurityException。
+    @SuppressLint("MissingPermission")
+    private var recorderFactory = CaptureRecorderFactory { source, rate, channel, format, bufferSize ->
+        val recorder = AudioRecord(source, rate, channel, format, bufferSize)
+        object : CaptureRecorder {
+            override val state: Int get() = recorder.state
+            override val recordingState: Int get() = recorder.recordingState
+            override fun startRecording() = recorder.startRecording()
+            override fun stop() = recorder.stop()
+            override fun read(buffer: ByteArray, offset: Int, size: Int): Int =
+                recorder.read(buffer, offset, size)
+            override fun release() = recorder.release()
+        }
+    }
+    private var minBufferSizeProvider: () -> Int = {
+        AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, AUDIO_FORMAT)
+    }
+    private var clock: () -> Long = System::currentTimeMillis
+    private var joinTimeoutMs: Long = 2_000L
+
+    private val sessionLock = Any()
+
+    @Volatile
     private var current: Session? = null
-    private var readerThread: Thread? = null
 
-    /**
-     * 标准形式的运行时权限检查。
-     *
-     * 保持为直接调用 ContextCompat.checkSelfPermission 的形式，便于静态检查工具
-     * 在调用受保护 API 的位置识别到「已检查权限」的事实。
-     */
     fun hasPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    /** 是否正在录音。 */
-    fun isRecording(): Boolean = current != null
+    /** 自动停止或失败后虽保留结果供 stop 消费，但不再谎报正在录音。 */
+    fun isRecording(): Boolean = current?.state == SessionState.RECORDING
 
-    /**
-     * 开始录音。立即返回，音频在后台线程持续读取。
-     *
-     * @return null 表示启动成功，否则返回失败原因码。
-     */
+    /** 开始录音。null 表示成功，否则返回错误码。 */
+    @Synchronized
     fun start(sessionId: String): String? {
-        if (current != null) {
-            return ERR_ILLEGAL_STATE
-        }
-        if (!hasPermission()) {
-            return ERR_PERMISSION_DENIED
-        }
+        if (current != null) return ERR_ILLEGAL_STATE
+        if (!hasPermission()) return ERR_PERMISSION_DENIED
 
-        val minBuffer = AudioRecord.getMinBufferSize(
-            sampleRate,
-            CHANNEL_CONFIG,
-            AUDIO_FORMAT,
-        )
+        val minBuffer = minBufferSizeProvider()
         if (minBuffer <= 0) {
             DiagnosticLog.e("Capture", "getMinBufferSize 失败: " + minBuffer)
             return ERR_INVALID_BUFFER
         }
-        // 取最小缓冲的 4 倍（审计 4.1.1 要求说明依据）：
-        // getMinBufferSize 返回的是「刚好不溢出」的临界值，等于它时
-        // 读线程稍有调度延迟就会丢帧（Overrun）。
-        // 4 倍对应约 4 个读周期（16 kHz 单声道 16 位，约 80-120 ms）的容忍窗口，
-        // 足以覆盖普通的主线程抖动与 GC 停顿；
-        // 而多出的内存仅几百 KB，相对 239 MB 的模型可忽略。
-        // 再大也没有收益——真正的瓶颈是读线程能否被及时调度，不是缓冲深度。
         val bufferSize = minBuffer * BUFFER_SIZE_FACTOR
-
         val recorder = try {
-            // 在构造点直接调用标准的 ContextCompat.checkSelfPermission：
-            // Lint 只认这种直接调用形式，自定义包装函数无法被静态识别。
-            // 权限也可能在检查后被撤销，因此后续仍有 SecurityException 兜底。
+            // Lint 需要在受保护 API 调用点直接看到权限检查。
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) !=
                 PackageManager.PERMISSION_GRANTED
             ) {
                 return ERR_PERMISSION_DENIED
             }
-            AudioRecord(
+            recorderFactory.create(
                 sourceOption.sourceConstant,
                 sampleRate,
                 CHANNEL_CONFIG,
@@ -150,6 +197,9 @@ class AudioCapture(
         } catch (error: IllegalStateException) {
             DiagnosticLog.e("Capture", "AudioRecord 状态异常: " + error.message)
             return ERR_ILLEGAL_STATE
+        } catch (error: SecurityException) {
+            DiagnosticLog.e("Capture", "AudioRecord 权限被拒: " + error.message)
+            return ERR_PERMISSION_DENIED
         }
 
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
@@ -159,11 +209,11 @@ class AudioCapture(
         }
 
         val session = Session(
+            sessionId = sessionId,
             recorder = recorder,
             buffer = ByteArray(bufferSize),
             samples = ByteArrayOutputStream(),
-            startedAt = System.currentTimeMillis(),
-            stopRequested = AtomicBoolean(false),
+            startedAt = clock(),
         )
 
         return try {
@@ -180,102 +230,109 @@ class AudioCapture(
                 return ERR_NOT_RECORDING
             }
             current = session
-
-            val thread = Thread({
-                readLoop(session)
-            }, "VoiceClear-AudioReader")
+            val thread = Thread({ readLoop(session) }, "VoiceClear-AudioReader")
             thread.isDaemon = true
-            readerThread = thread
+            session.readerThread = thread
             thread.start()
-
             DiagnosticLog.i(
                 "Capture",
                 "录音已开始, 采样率=" + sampleRate + ", 缓冲区=" + bufferSize +
-                    " 字节, 音源=" + sourceOption.id,
+                    " 字节, 音源=" + sourceOption.id + ", sessionId=" + sessionId,
             )
             null
         } catch (error: SecurityException) {
-            runCatching { recorder.release() }
+            synchronized(sessionLock) { if (current === session) current = null }
+            session.fail(ERR_PERMISSION_DENIED)
+            session.cleanup()
             DiagnosticLog.e("Capture", "startRecording 权限被拒: " + error.message)
             ERR_PERMISSION_DENIED
         } catch (error: IllegalStateException) {
-            runCatching { recorder.release() }
+            synchronized(sessionLock) { if (current === session) current = null }
+            session.fail(ERR_ILLEGAL_STATE)
+            session.cleanup()
             DiagnosticLog.e("Capture", "startRecording 状态异常: " + error.message)
             ERR_ILLEGAL_STATE
         }
     }
 
-    /**
-     * 停止录音并返回音频。
-     *
-     * 会等待读取线程收尾，因此返回时音频已完整。
-     */
+    /** 停止并返回完整音频；读取失败或 join 超时均明确返回 Failure。 */
     fun stop(): CaptureResult {
-        val session = current ?: return CaptureResult.Failure(ERR_NOT_RECORDING)
-        current = null
+        val session = synchronized(sessionLock) {
+            current.also { current = null }
+        } ?: return CaptureResult.Failure(ERR_NOT_RECORDING)
 
         session.stopRequested.set(true)
+        // stop/release 会解除阻塞 read；cleanup 幂等，读线程 finally 可再次调用。
+        session.cleanup()
+        val thread = session.readerThread
+        if (thread != null && thread !== Thread.currentThread()) {
+            thread.join(joinTimeoutMs)
+            if (thread.isAlive) {
+                session.fail(ERR_JOIN_TIMEOUT)
+                session.cleanup()
+                DiagnosticLog.e("Capture", "读取线程 join 超时，丢弃本次音频")
+                return CaptureResult.Failure(ERR_JOIN_TIMEOUT)
+            }
+        }
+        session.cleanup()
+        session.failureCode?.let { code ->
+            DiagnosticLog.e("Capture", "录音失败，丢弃不完整音频: " + code)
+            return CaptureResult.Failure(code)
+        }
 
-        // 先停 recorder 再等线程：recorder.stop() 会让阻塞中的 read() 立即返回，
-        // 这样 join 基本瞬时完成；反过来先 join 的话，阻塞中的 read 可能吃满 2 秒超时。
-        runCatching { session.recorder.stop() }
-        readerThread?.join(2000)
-        readerThread = null
-        runCatching { session.recorder.release() }
-
+        val byteCount = session.samples.size()
         val durationMs = if (sampleRate > 0) {
-            session.samples.size().toLong() * 1000L / (sampleRate.toLong() * 2L)
+            byteCount.toLong() * 1000L / (sampleRate.toLong() * 2L)
         } else {
             0L
         }
-
         val qualityFlags = mutableListOf<String>()
-        if (session.samples.size() == 0) {
-            qualityFlags.add(FLAG_EMPTY_CAPTURE)
-        }
-        if (durationMs < MIN_VOICE_DURATION_MS) {
-            qualityFlags.add(FLAG_TOO_SHORT)
-        }
+        if (byteCount == 0) qualityFlags.add(FLAG_EMPTY_CAPTURE)
+        if (durationMs < MIN_VOICE_DURATION_MS) qualityFlags.add(FLAG_TOO_SHORT)
 
         DiagnosticLog.i(
             "Capture",
-            "录音已停止, 时长=" + durationMs + "ms, 字节=" + session.samples.size(),
+            "录音已停止, 时长=" + durationMs + "ms, 字节=" + byteCount +
+                ", sessionId=" + session.sessionId,
         )
-
         return CaptureResult.Success(
             AudioSegment(
-                sessionId = "",
+                sessionId = session.sessionId,
                 sampleRate = sampleRate,
                 channelCount = 1,
                 encoding = AudioEncoding.PCM_16BIT,
                 durationMs = durationMs,
                 samples = session.samples.toByteArray(),
+                qualityFlags = qualityFlags,
             ),
         )
     }
 
-    /** 丢弃当前录音（用于取消）。 */
+    /** 丢弃当前录音（用于取消），可与读线程清理安全重入。 */
     fun cancel() {
-        val session = current ?: return
-        current = null
+        val session = synchronized(sessionLock) {
+            current.also { current = null }
+        } ?: return
         session.stopRequested.set(true)
-        readerThread?.join(1000)
-        readerThread = null
-        runCatching { session.recorder.stop() }
-        runCatching { session.recorder.release() }
-        DiagnosticLog.i("Capture", "录音已取消")
+        session.cleanup()
+        val thread = session.readerThread
+        if (thread != null && thread !== Thread.currentThread()) {
+            thread.join(joinTimeoutMs)
+            if (thread.isAlive) {
+                session.fail(ERR_JOIN_TIMEOUT)
+                DiagnosticLog.e("Capture", "取消时读取线程 join 超时")
+            }
+        }
+        session.cleanup()
+        DiagnosticLog.i("Capture", "录音已取消, sessionId=" + session.sessionId)
     }
 
-    /**
-     * 后台读取循环。
-     *
-     * 持续读取直到被请求停止或达到时长上限。
-     */
     private fun readLoop(session: Session) {
         try {
             while (!session.stopRequested.get()) {
-                val elapsed = System.currentTimeMillis() - session.startedAt
+                val elapsed = clock() - session.startedAt
                 if (elapsed >= MAX_DURATION_MS) {
+                    session.state = SessionState.COMPLETED
                     DiagnosticLog.w(
                         "Capture",
                         "达到录音时长上限 " + MAX_DURATION_MS + "ms，自动停止",
@@ -286,15 +343,24 @@ class AudioCapture(
                 if (read > 0) {
                     session.samples.write(session.buffer, 0, read)
                 } else if (read < 0) {
-                    DiagnosticLog.e("Capture", "read 返回错误码: " + read)
+                    if (!session.stopRequested.get()) {
+                        session.fail(ERR_READ_FAILED)
+                        DiagnosticLog.e("Capture", "read 返回错误码: " + read)
+                    }
                     break
                 }
             }
         } catch (error: Throwable) {
-            DiagnosticLog.e(
-                "Capture",
-                "读取循环异常: " + (error.message ?: error.javaClass.simpleName),
-            )
+            if (!session.stopRequested.get()) {
+                session.fail(ERR_READ_FAILED)
+                DiagnosticLog.e(
+                    "Capture",
+                    "读取循环异常: " + (error.message ?: error.javaClass.simpleName),
+                )
+            }
+        } finally {
+            session.finishFromReader()
+            session.cleanup()
         }
     }
 }
