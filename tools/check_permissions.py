@@ -15,7 +15,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,12 +33,23 @@ REQUIRED = [
 ]
 
 
-def find_aapt2() -> str | None:
-    sdk = Path("/opt/android-sdk")
-    if not sdk.exists():
-        return None
-    candidates = sorted((sdk / "build-tools").glob("*/aapt2"), reverse=True)
-    return str(candidates[0]) if candidates else None
+def find_aapt2(environment: dict[str, str] | None = None) -> str | None:
+    """按标准环境定位 aapt2，兼容 GitHub Actions、PATH 与本机 SDK。"""
+
+    env = os.environ if environment is None else environment
+    on_path = shutil.which("aapt2", path=env.get("PATH"))
+    if on_path:
+        return on_path
+
+    sdk_roots = [env.get("ANDROID_HOME"), env.get("ANDROID_SDK_ROOT"), "/opt/android-sdk"]
+    for value in sdk_roots:
+        if not value:
+            continue
+        sdk = Path(value)
+        candidates = sorted((sdk / "build-tools").glob("*/aapt2"), reverse=True)
+        if candidates:
+            return str(candidates[0])
+    return None
 
 
 def main(argv: list) -> int:

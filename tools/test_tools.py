@@ -631,5 +631,26 @@ class ImportSessionTest(unittest.TestCase, DatasetFactory):
             self.assertFalse(any(dest.parent.glob(".dest.backup-*")))
 
 
+class PermissionCheckerTest(unittest.TestCase):
+    def test_find_aapt2_uses_android_home(self):
+        checker = import_tool("check_permissions")
+        with tempfile.TemporaryDirectory() as tmp:
+            executable = Path(tmp) / "build-tools" / "36.0.0" / "aapt2"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            executable.chmod(0o755)
+            env = {"ANDROID_HOME": tmp, "PATH": ""}
+            self.assertEqual(str(executable), checker.find_aapt2(env))
+
+    def test_find_aapt2_uses_path(self):
+        checker = import_tool("check_permissions")
+        with tempfile.TemporaryDirectory() as tmp:
+            executable = Path(tmp) / "aapt2"
+            executable.touch()
+            executable.chmod(0o755)
+            env = {"ANDROID_HOME": str(Path(tmp) / "missing"), "PATH": tmp}
+            self.assertEqual(str(executable), checker.find_aapt2(env))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
