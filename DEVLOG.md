@@ -1,5 +1,27 @@
 # VoiceClear 开发日志
 
+## 2026-11-26 22:15 - 修复托管 runner 权限门禁并改发 v0.12.1
+
+**做了什么：**
+
+- 首次云端运行 `45830021639`：Python 51 项、Android 测试和 Debug 构建成功，但 `checkApkPermissions` 因找不到 aapt2 失败，Release job 未执行。
+- 根因：`tools/check_permissions.py` 将 Android SDK 写死为 `/opt/android-sdk`；现改为支持 `ANDROID_HOME`、`ANDROID_SDK_ROOT` 和 PATH，保留本机回退。
+- 新增 2 项环境定位测试，Python 工具测试增至 53 项。
+- 公开标签不改写、不强推；版本改为 `versionCode=15 / versionName=0.12.1`，标签 `v0.12.1`，发布说明同步更新。
+- 提交 hash: 69a44ac
+
+**本地验证：**
+
+- 按 CI 相同命令，Python 53/53、Android 测试、Lint、Debug 构建、ASR 配置与 APK 权限门禁全部通过。
+- 工作流 YAML、敏感信息扫描和 Git diff check 通过。
+
+**待做什么：**
+
+- 推送 v0.12.1 并跟踪新的 build/release job；确认 APK、SHA256SUMS 和 Release 下载地址。
+- 首次失败的 run 保留作排错证据，不视为已发布。
+
+---
+
 ## 2026-11-26 21:15 - 配置 GitHub Actions Debug APK 构建与 Release（0.12.0）
 
 **做了什么：**
