@@ -136,6 +136,8 @@ python3 -m unittest tools.test_tools -v  # Python 工具测试
 
 ## GitHub Actions APK 发布
 
+当前 Debug 测试版：[v0.12.1 Release](https://github.com/zyi07/VoiceClear/releases/tag/v0.12.1)。
+
 工作流：`.github/workflows/android-release.yml`。推送 `v*` 标签，或在 Actions 页面手动输入标签即可运行；
 标签必须等于 `v` + `app/build.gradle.kts` 中的 `versionName`，并需要对应的 `docs/releases/<tag>.md`。
 

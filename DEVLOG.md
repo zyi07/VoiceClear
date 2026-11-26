@@ -1,5 +1,27 @@
 # VoiceClear 开发日志
 
+## 2026-11-26 22:40 - GitHub Actions v0.12.1 发布完成
+
+**做了什么：**
+
+- Actions run `45838263119` 的 build 与 release 两个 job 全部成功，版本、Debug 签名、SHA-256 与 artifact 上传均通过。
+- 发布 GitHub prerelease：`https://github.com/zyi07/VoiceClear/releases/tag/v0.12.1`。
+- Release 附件：`VoiceClear-v0.12.1-debug.apk`（59,723,166 字节）与 `SHA256SUMS.txt`。
+- 保留 90 天 artifact：`voiceclear-v0.12.1-debug`，artifact ID 15125404545，未过期。
+- 标签对应提交 hash: bee257d。
+
+**独立下载验证：**
+
+- 从 Release 公开地址重新下载 APK，`sha256sum -c SHA256SUMS.txt` 返回 OK。
+- 下载包通过 `apksigner verify`；AAPT2 核实包名 `com.voiceclear.app`、versionCode 15、versionName 0.12.1。
+
+**待做什么：**
+
+- 本 Release 是可直接安装的调试签名测试版，不是正式上架包。
+- 真机 Gate 3 与目标人群 ASR 质量基线仍待执行；正式发布签名不在本次范围内。
+
+---
+
 ## 2026-11-26 22:15 - 修复托管 runner 权限门禁并改发 v0.12.1
 
 **做了什么：**
