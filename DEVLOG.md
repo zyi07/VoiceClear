@@ -1,5 +1,34 @@
 # VoiceClear 开发日志
 
+## 2026-11-27 01:05 - 普通话与山东方言识别配置、采集和分层评测（0.13.0）
+
+**做了什么：**
+
+- 新增 `SpeechProfile`：普通话 `mandarin` 与山东方言 `shandong`，两者显式固定 SenseVoice `language=zh`，消除自动检测误判中文为粤语的配置路径。
+- 主界面和采集页共享持久化档案；引擎加载以 profile+generation 防止旧加载覆盖新配置；采集返回主页会重新核对引擎和按钮。
+- 识别结果、指标、设置、片段、说话人和导出均携带 profile；山东另记 `jilu/zhongyuan/jiaoliao/unspecified` 方言分区，locale 保持真实 `zh-CN`。
+- 新增 36 条山东自然朗读句，覆盖日常、否定、数字、方向、医疗和对话；assets/tools 同步且 ID 与普通话句库隔离。
+- 校验和评测增加 profile/分区、hyp/ref 元数据一致性、片段 research_use、当前 grants 与有效覆盖率检查；导出人群区分普通话、山东和混合语料。
+- 新增 `docs/shandong-dialect-capture-evaluation.md`，给出同说话人、同句、同设备的 A/B 与防数据泄漏协议；版本提升为 16 / 0.13.0，但不自动发布未经验证的效果包。
+- 提交 hash: be4bf09
+
+**审查与验证：**
+
+- 官方文档核实：SenseVoice 中文是普通话，无独立山东标签；当前热词机制只支持 transducer，不用于本链路；2025-09-09 模型是粤语微调而非山东模型。
+- 首轮 Android 239 项中 1 项测试因漏算既有音频路径规范化失败，修正测试后重新全量验证。
+- 二次只读复核修复采集返回旧引擎、片段级授权、普通话非法分区、错配覆盖率和导出人群写死五项问题。
+- 最终 Android 36 个测试类、242 项，0 failure / 0 error / 0 skipped；Python 68/68 通过。
+- `lintDebug`、`assembleDebug`、`checkAsrConfig`、`checkApkPermissions` 全部通过；句库 assets/tools 逐字节一致，APK 版本核实为 0.13.0 (16)。
+- 敏感信息闸门与 Git diff check 通过；无关 docx/package/scripts 未纳入。
+
+**待做什么：**
+
+- 本轮只证明代码、配置、数据契约和构建，不宣称普通话或山东方言识别率已提升。
+- 必须采集目标人群真实普通话与本地话配对录音，按协议跑同模型基线和候选模型实验；若需要真正的山东声学适配，再评估微调/适配器或独立模型，并做防普通话退化回归。
+- 真机 Gate 3、实际方言识别效果和正式发布签名仍未完成。
+
+---
+
 ## 2026-11-26 22:40 - GitHub Actions v0.12.1 发布完成
 
 **做了什么：**
