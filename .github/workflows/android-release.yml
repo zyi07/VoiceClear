@@ -1,0 +1,104 @@
+name: android-apk-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag; must equal v + app versionName"
+        required: true
+        default: "v0.12.0"
+        type: string
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: voiceclear-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Test and build debug APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Java 17 and Gradle cache
+        uses: actions/setup-java@v6.3.0
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Run Python tools tests
+        run: python3 -m unittest tools.test_tools -v
+
+      - name: Run Android tests, lint, build and project gates
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug \
+            :app:checkAsrConfig :app:checkApkPermissions --no-daemon
+
+      - name: Validate version, debug signature and package artifacts
+        env:
+          EXPECTED_TAG: ${{ env.RELEASE_TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_NAME=$(python3 -c 'import re; print(re.search(r"versionName\s*=\s*\"([^\"]+)\"", open("app/build.gradle.kts").read()).group(1))')
+          if [ "$EXPECTED_TAG" != "v$VERSION_NAME" ]; then
+            echo "Tag $EXPECTED_TAG does not match app versionName $VERSION_NAME"
+            exit 1
+          fi
+          mkdir -p dist
+          APK="dist/VoiceClear-${EXPECTED_TAG}-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$APK"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "apksigner not found"
+            exit 1
+          fi
+          "$APKSIGNER" verify "$APK"
+          (cd dist && sha256sum ./*.apk > SHA256SUMS.txt)
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: voiceclear-${{ env.RELEASE_TAG }}-debug
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v7.0.1
+
+      - name: Download verified APK artifact
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: voiceclear-${{ env.RELEASE_TAG }}-debug
+          path: dist
+
+      - name: Publish prerelease with debug-signed APK
+        uses: softprops/action-gh-release@v3.0.4
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: VoiceClear ${{ env.RELEASE_TAG }} — Debug 测试版
+          body_path: docs/releases/${{ env.RELEASE_TAG }}.md
+          prerelease: true
+          draft: false
+          fail_on_unmatched_files: true
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

@@ -134,6 +134,14 @@ python3 -m unittest tools.test_tools -v  # Python 工具测试
 > 音频路由、来电中断、蓝牙断连、PCM/TTS 停止、旋转、SAF、连续会话温升与延迟
 > 仍需按真机手册逐项测量并留存截图/日志。
 
+## GitHub Actions APK 发布
+
+工作流：`.github/workflows/android-release.yml`。推送 `v*` 标签，或在 Actions 页面手动输入标签即可运行；
+标签必须等于 `v` + `app/build.gradle.kts` 中的 `versionName`，并需要对应的 `docs/releases/<tag>.md`。
+
+流水线执行 Python/Android 测试、Lint、Debug 构建、项目门禁、Debug 签名验证和 SHA-256 校验，
+随后保留 90 天 artifact 并发布 GitHub prerelease。当前产物是**可直接安装的调试签名测试包，不是正式上架包**。
+
 ## 诚实的边界
 
 - **真实 ASR 已接入，但无目标人群质量结论**：主流程使用端侧 SenseVoice；
