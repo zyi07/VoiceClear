@@ -2,6 +2,17 @@
     <string name="capture_title">采集模式</string>
     <string name="capture_notice">用于研究评测的录音采集。所有研究用途默认拒绝，须逐项明确授权；数据只保存在本机，不联网。</string>
     <string name="capture_choose_prompt">选择朗读提示句</string>
+    <string name="capture_speech_profile">选择采集语料</string>
+    <string name="capture_speech_profile_format">采集语料：%1$s</string>
+    <string name="capture_speech_profile_title">选择本次采集语料（录音中不可切换）</string>
+    <string name="capture_dialect_group">选择山东方言分区</string>
+    <string name="capture_dialect_group_format">方言分区：%1$s</string>
+    <string name="capture_dialect_group_title">选择说话人实际使用的方言分区</string>
+    <string name="capture_dialect_group_unspecified">分区暂未补录；可继续采集，但导出校验会提醒补录</string>
+    <string name="dialect_group_unspecified">暂未确认</string>
+    <string name="dialect_group_jilu">冀鲁官话</string>
+    <string name="dialect_group_zhongyuan">中原官话</string>
+    <string name="dialect_group_jiaoliao">胶辽官话</string>
     <string name="capture_start_record">开始录音</string>
     <string name="capture_spontaneous">录一段自发表达</string>
     <string name="capture_export">导出数据集（仅元数据）</string>
@@ -37,7 +48,7 @@
     <string name="capture_cancel">取消</string>
     <string name="capture_prompt_pick_title">选择提示句</string>
     <string name="capture_prompt_note">%1$s（%2$s）</string>
-    <string name="capture_no_prompts">提示句库为空，请检查 assets/prompts/prompts.json</string>
+    <string name="capture_no_prompts">当前语料提示句库为空或不完整，请检查 assets/prompts/</string>
     <string name="capture_speaker_default">说话人 %1$s</string>
     <string name="capture_stats_format">已采集 %1$d 条 / %2$s</string>
     <string name="capture_permission_needed">需要麦克风权限才能录音</string>

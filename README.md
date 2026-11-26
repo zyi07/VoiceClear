@@ -89,6 +89,14 @@ Android 上 `user.home` 为 null，路径退化成 `/lib/linux-aarch64`，应用
 **已知限制**：SenseVoice 不提供 token 级置信度，因此引擎返回 `confidence = null`，
 上层不得以置信度阈值自动放行内容，内容安全依赖"用户确认文本"这一交互。
 
+### 普通话与山东方言档案
+
+- 主界面与采集模式均可选择 `mandarin` / `shandong`；两种档案都显式固定 `language=zh`，避免自动误判语种。
+- 山东档案共用同一 SenseVoice 模型，**不是方言专用模型**，不通过热词或强制文本替换伪装适配。
+- 采集另记冀鲁官话、中原官话、胶辽官话分区；36 条自然朗读提示和 Python 分层评测用于真实 A/B。
+- 协议与模型依据见 [山东方言采集与评测](docs/shandong-dialect-capture-evaluation.md)。
+- 当前只完成适配链路与配置优化，识别率是否提升必须由目标人群真实语料验证。
+
 ## 安装与真机测试
 
 ```bash

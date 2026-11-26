@@ -94,6 +94,9 @@ object CaptureJson {
         json.putSafe("audioFileName", segment.audioFileName)
         json.putSafe("audioAvailable", segment.audioAvailable)
         json.putSafe("deletionReason", segment.deletionReason ?: JSONObject.NULL)
+        json.putSafe("speechProfileId", segment.speechProfileId)
+        json.putSafe("localeTag", segment.localeTag)
+        json.putSafe("dialectGroup", segment.dialectGroup)
         return json
     }
 
@@ -145,6 +148,9 @@ object CaptureJson {
             audioFileName = audioPath,
             audioAvailable = json.optBoolean("audioAvailable", true),
             deletionReason = json.nullableString("deletionReason"),
+            speechProfileId = json.optString("speechProfileId", "mandarin"),
+            localeTag = json.optString("localeTag", "zh-CN"),
+            dialectGroup = json.optString("dialectGroup", "unspecified"),
         )
     }
 
@@ -195,6 +201,9 @@ object CaptureJson {
         json.putSafe("firstSessionDate", speaker.firstSessionDate)
         json.putSafe("sessionCount", speaker.sessionCount)
         json.putSafe("speakingEnvironment", JSONArray(speaker.speakingEnvironment))
+        json.putSafe("speechProfileId", speaker.speechProfileId)
+        json.putSafe("localeTag", speaker.localeTag)
+        json.putSafe("dialectGroup", speaker.dialectGroup)
         return json
     }
 
@@ -217,6 +226,9 @@ object CaptureJson {
             firstSessionDate = json.optString("firstSessionDate", ""),
             sessionCount = json.optInt("sessionCount", 0),
             speakingEnvironment = json.optJSONArray("speakingEnvironment")?.stringList().orEmpty(),
+            speechProfileId = json.optString("speechProfileId", "mandarin"),
+            localeTag = json.optString("localeTag", "zh-CN"),
+            dialectGroup = json.optString("dialectGroup", "unspecified"),
         )
     }
 

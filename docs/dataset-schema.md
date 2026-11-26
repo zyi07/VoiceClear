@@ -2,7 +2,7 @@
 
 > 版本：v1.0  
 
-> 配套文档：[数据采集协议](target-cohort-data-collection-protocol.md)  
+> 配套文档：[数据采集协议](target-cohort-data-collection-protocol.md)；[山东方言采集与 A/B 评测补充协议](shandong-dialect-capture-evaluation.md)
 
 > 状态：设计基线，待伦理/合规审查后使用
 
@@ -24,7 +24,9 @@ dataset/
 
 ├── prompts/                   # 朗读提示句库
 
-│   └── prompts.json
+│   ├── prompts.json
+
+│   └── shandong.json           # 山东方言语料句库；独立 ID、类别和版本
 
 ├── transcripts/               # 转写与意图基准
 
@@ -78,7 +80,13 @@ dataset/
 
   "sessionCount": 3,
 
-  "speakingEnvironment": ["quiet", "mild_noise"]
+  "speakingEnvironment": ["quiet", "mild_noise"],
+
+  "speechProfileId": "mandarin",
+
+  "localeTag": "zh-CN",
+
+  "dialectGroup": "unspecified"
 
 }
 
@@ -148,13 +156,27 @@ dataset/
 
   "guideVersion": "v1.0",
 
-  "consentFlags": ["research_use", "train_use"]
+  "consentFlags": ["research_use", "train_use"],
+
+  "speechProfileId": "mandarin",
+
+  "localeTag": "zh-CN",
+
+  "dialectGroup": "unspecified"
 
 }
 
 ```
 
 **`scene` 取值**：`read`（朗读）、`spontaneous`（自发表达）、`dialogue`（对话片段）。
+
+**语料分层字段**：
+
+- `speechProfileId`：`mandarin` / `shandong`；旧数据缺失时按 `mandarin`；
+- `localeTag`：当前统一为 `zh-CN`，不把方言分区编码成虚构 locale；
+- `dialectGroup`：`jilu` / `zhongyuan` / `jiaoliao` / `unspecified`，旧数据缺失时按 `unspecified`；
+- 山东语料分区暂缺可保留，但校验器会 WARN 提醒补录；非法值会使片段无效。
+- 片段字段是分层评测的权威来源，speaker 中的同名字段只作汇总，不能覆盖逐段事实。
 
 **`referenceText` 与 `intendedText` 的区别**（关键）：
 
@@ -288,6 +310,8 @@ spk_001
 
 8. 同一 `sessionId` 不跨划分出现。
 
+9. `speechProfileId` / `localeTag` / `dialectGroup` 必须为上述合法值；山东分区未确认时给出补录提醒。
+
 ## 5. 与产品指标的衔接
 
 | 字段 | 支撑的指标 |
@@ -299,6 +323,8 @@ spk_001
 | `severityLevel` | 分层退化分析（8.3 节公平性） |
 
 | `scene` | 场景分层结果 |
+
+| `speechProfileId` / `dialectGroup` | 普通话/山东语料及山东内部分区的 CER、关键错误分层 |
 
 | `sessionDate` / `speakerId` | 跨会话稳定性（5.3 节消融） |
 

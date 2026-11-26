@@ -46,12 +46,51 @@ CONSENT_GRANTS = {
 }
 PUNCTUATION = set("，。！？；：、,.!?;:（）()《》〈〉【】[]{}…—～~·「」『』" + "\"")
 PCM_ENCODINGS = {"pcm_s16", "pcm_s16le", "pcm16", "pcm_16"}
+SPEECH_PROFILE_IDS = {"mandarin", "shandong"}
+DIALECT_GROUPS = {"jilu", "zhongyuan", "jiaoliao", "unspecified"}
+DEFAULT_SPEECH_PROFILE_ID = "mandarin"
+DEFAULT_LOCALE_TAG = "zh-CN"
+DEFAULT_DIALECT_GROUP = "unspecified"
 
 
 def normalize_reference(text: str) -> str:
     """与 eval_asr.normalize 使用同一口径，识别标点组成的空基准。"""
 
     return "".join(ch for ch in text.strip() if not ch.isspace() and ch not in PUNCTUATION)
+
+
+def speech_metadata(record: dict[str, Any]) -> tuple[str, str, str]:
+    """返回语料分层；只有字段缺失时才使用旧数据兼容默认值。"""
+
+    profile = record.get("speechProfileId", DEFAULT_SPEECH_PROFILE_ID)
+    locale = record.get("localeTag", DEFAULT_LOCALE_TAG)
+    group = record.get("dialectGroup", DEFAULT_DIALECT_GROUP)
+    if not isinstance(profile, str) or profile not in SPEECH_PROFILE_IDS:
+        raise ValueError(f"speechProfileId 非法: {profile!r}，合法值为 {sorted(SPEECH_PROFILE_IDS)}")
+    if locale != DEFAULT_LOCALE_TAG:
+        raise ValueError(f"localeTag 非法: {locale!r}，当前固定为 zh-CN")
+    if not isinstance(group, str) or group not in DIALECT_GROUPS:
+        raise ValueError(f"dialectGroup 非法: {group!r}，合法值为 {sorted(DIALECT_GROUPS)}")
+    if profile == "mandarin" and group != DEFAULT_DIALECT_GROUP:
+        raise ValueError("mandarin 的 dialectGroup 必须为 unspecified")
+    return profile, locale, group
+
+
+def check_speech_metadata(
+    record: dict[str, Any],
+    location: str,
+    findings: Findings,
+) -> tuple[str, str, str]:
+    """校验语料元数据；山东分区未确认保留数据但明确提醒补录。"""
+
+    try:
+        profile, locale, group = speech_metadata(record)
+    except ValueError as error:
+        findings.error(f"{location} {error}")
+        return DEFAULT_SPEECH_PROFILE_ID, DEFAULT_LOCALE_TAG, DEFAULT_DIALECT_GROUP
+    if profile == "shandong" and group == "unspecified":
+        findings.warn(f"{location} 山东方言片段的 dialectGroup 尚未确认，请补录实际分区")
+    return profile, locale, group
 
 
 def load_json(path: Path) -> Any:
@@ -183,6 +222,7 @@ def check_speakers(dataset_dir: Path, findings: Findings) -> dict[str, dict[str,
             findings.warn(f"{speaker_id} 的严重度判定来源非专业顾问，可能影响分层结论")
         if record.get("sessionCount", 0) < 3:
             findings.warn(f"{speaker_id} 会话数 {record.get('sessionCount')} < 3，跨会话稳定性无法评估")
+        check_speech_metadata(record, speaker_id, findings)
         speakers[speaker_id] = record
 
     return speakers
@@ -369,6 +409,10 @@ def check_transcripts(
                 if manifest_ids and speaker_id not in manifest_ids:
                     findings.error(f"{location} 说话人 {speaker_id} 在 manifest speakers 中不存在")
                     record_ok = False
+                metadata_errors_before = len(findings.errors)
+                check_speech_metadata(record, location, findings)
+                if len(findings.errors) > metadata_errors_before:
+                    record_ok = False
                 if record.get("scene") not in SCENES:
                     findings.error(f"{location} scene 非法: {record.get('scene')!r}")
                     record_ok = False
@@ -432,6 +476,9 @@ def check_transcripts(
                 if not isinstance(consent_flags, list):
                     findings.error(f"{location} consentFlags 必须是数组")
                     consent_flags = []
+                    record_ok = False
+                if "research_use" not in consent_flags:
+                    findings.error(f"{location} consentFlags 必须明确包含 research_use")
                     record_ok = False
                 for flag in consent_flags:
                     if flag not in CONSENT_GRANTS:

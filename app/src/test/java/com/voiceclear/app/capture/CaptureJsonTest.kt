@@ -54,6 +54,7 @@ class CaptureJsonTest {
             "referenceText", "referenceSource", "intendedText", "durationMs", "sampleRate",
             "channels", "encoding", "deviceModel", "environment", "qualityFlags",
             "annotatorId", "guideVersion", "consentFlags", "audioFileName", "audioAvailable",
+            "speechProfileId", "localeTag", "dialectGroup",
         )
         for (field in required) {
             assertTrue("缺少字段: " + field, json.has(field))
@@ -65,6 +66,31 @@ class CaptureJsonTest {
         val json = CaptureJson.segmentToJson(sampleSegment())
         assertEquals("read", json.getString("scene"))
         assertEquals("approved_prompt", json.getString("referenceSource"))
+    }
+
+    @Test
+    fun dialectProfileRoundTripsAndLegacyJsonDefaultsToMandarin() {
+        val shandong = sampleSegment().copy(
+            speechProfileId = "shandong",
+            localeTag = "zh-CN",
+            dialectGroup = "jilu",
+        )
+        val json = CaptureJson.segmentToJson(shandong)
+        assertEquals("shandong", json.getString("speechProfileId"))
+        assertEquals("zh-CN", json.getString("localeTag"))
+        assertEquals("jilu", json.getString("dialectGroup"))
+        assertEquals(
+            shandong.copy(audioFileName = "segments/ses_001/seg_001.pcm"),
+            CaptureJson.segmentFromJson(json),
+        )
+
+        json.remove("speechProfileId")
+        json.remove("localeTag")
+        json.remove("dialectGroup")
+        val legacy = CaptureJson.segmentFromJson(json)
+        assertEquals("mandarin", legacy.speechProfileId)
+        assertEquals("zh-CN", legacy.localeTag)
+        assertEquals("unspecified", legacy.dialectGroup)
     }
 
     @Test
@@ -139,11 +165,18 @@ class CaptureJsonTest {
             firstSessionDate = "2026-11-20",
             sessionCount = 3,
             speakingEnvironment = listOf("quiet"),
+            speechProfileId = "shandong",
+            localeTag = "zh-CN",
+            dialectGroup = "jiaoliao",
         )
         val json = CaptureJson.speakerToJson(speaker)
         val hearingAid = json.getJSONObject("hearingAid")
         assertTrue(hearingAid.getBoolean("worn"))
         assertEquals("behind_the_ear", hearingAid.getString("type"))
         assertEquals("professional_advisor", json.getString("severitySource"))
+        assertEquals("shandong", json.getString("speechProfileId"))
+        assertEquals("zh-CN", json.getString("localeTag"))
+        assertEquals("jiaoliao", json.getString("dialectGroup"))
+        assertEquals(speaker, CaptureJson.speakerFromJson(json))
     }
 }

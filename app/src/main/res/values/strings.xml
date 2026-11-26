@@ -33,6 +33,12 @@
     <string name="audio_source_help">不同设备对音源的处理差别很大。请用同一句话分别测试两种设置，选出识别更准的那一个。</string>
     <string name="audio_source_saved">已切换为：%1$s</string>
     <string name="audio_source_busy">正在录音，无法切换麦克风。请先停止录音再切换。</string>
+    <string name="speech_settings">识别语言档案</string>
+    <string name="speech_profile_title">选择识别语言档案</string>
+    <string name="speech_profile_current">识别档案：%1$s</string>
+    <string name="speech_profile_saved">已选择%1$s，正在按新档案准备识别引擎</string>
+    <string name="speech_profile_help">两种档案共用同一 SenseVoice 模型，中文配置均为 zh。山东方言档案只用于记录和对比实际识别效果，不是方言专用模型，也不会用热词或文本替换冒充方言识别能力。</string>
+    <string name="speech_profile_busy">当前会话正在处理，请完成或取消后再切换识别档案。</string>
     <string name="session_in_progress">上一次表达还没完成。请先点「确认」或「取消」，再开始新的录音。</string>
     <string name="engine_memory_insufficient">可用内存不足，无法加载识别模型。请关闭其他后台应用后重新打开本应用。</string>
     <string name="recording_limit_reached">已达最长录音时间（30 秒），超出部分未被录入。</string>

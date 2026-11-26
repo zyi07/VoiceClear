@@ -60,6 +60,19 @@ class MetricsCollectorTest {
     }
 
     @Test
+    fun `export includes session speech profile`() {
+        val collector = MetricsCollector()
+        collector.record(
+            SessionMetrics(
+                sessionId = "shandong-session",
+                speechProfileId = com.voiceclear.app.engine.SpeechProfile.SHANDONG.id,
+            ),
+        )
+        val json = collector.exportJson()
+        assertTrue(json.contains("\"speechProfileId\":\"shandong\""))
+    }
+
+    @Test
     fun `clear removes all metrics`() {
         val collector = MetricsCollector()
         collector.record(SessionMetrics(sessionId = "a"))

@@ -21,10 +21,80 @@ class SenseVoiceConfigTest {
     }
 
     @Test
-    fun `language is empty for auto detection`() {
-        // 官方默认值是 language=""（自动检测）。模型是多语种，
-        // 显式限定中文反而会限制能力。
-        assertEquals("", SenseVoiceRecognitionEngine.LANGUAGE)
+    fun `language is fixed to Chinese for both profiles`() {
+        assertEquals("zh", SenseVoiceRecognitionEngine.LANGUAGE)
+        assertEquals(listOf("zh", "zh"), SpeechProfile.ALL.map { it.asrLanguage })
+    }
+
+    @Test
+    fun `unknown profile id falls back to Mandarin`() {
+        assertEquals(SpeechProfile.MANDARIN, SpeechProfile.fromId(null))
+        assertEquals(SpeechProfile.MANDARIN, SpeechProfile.fromId("unknown"))
+        assertEquals(SpeechProfile.SHANDONG, SpeechProfile.fromId("shandong"))
+    }
+
+    @Test
+    fun `both profiles pass zh to native config`() {
+        SpeechProfile.ALL.forEach { profile ->
+            val dir = java.io.File.createTempFile("sensevoice-profile", ".dir").apply {
+                delete()
+                mkdirs()
+            }
+            try {
+                java.io.File(dir, SenseVoiceRecognitionEngine.MODEL_FILE).writeBytes(byteArrayOf(1))
+                java.io.File(dir, SenseVoiceRecognitionEngine.TOKENS_FILE).writeBytes(byteArrayOf(1))
+                var nativeConfig: com.k2fsa.sherpa.onnx.OfflineRecognizerConfig? = null
+                val engine = SenseVoiceRecognitionEngine(
+                    dir.absolutePath,
+                    SenseVoiceNativeFactory { config ->
+                        nativeConfig = config
+                        object : SenseVoiceNativeAdapter {
+                            override fun decode(samples: FloatArray, sampleRate: Int) =
+                                SenseVoiceNativeResult("测试", "zh")
+
+                            override fun release() = Unit
+                        }
+                    },
+                    profile,
+                )
+
+                assertTrue(engine.load())
+                assertEquals(profile, engine.profile)
+                assertEquals("zh", nativeConfig?.modelConfig?.senseVoice?.language)
+                val result = kotlinx.coroutines.runBlocking {
+                    engine.recognize(
+                        RecognitionRequest(
+                            sessionId = "profile-test",
+                            audio = AudioSegment(
+                                sessionId = "profile-test",
+                                sampleRate = 16_000,
+                                channelCount = 1,
+                                encoding = AudioEncoding.PCM_16BIT,
+                                durationMs = 1,
+                                samples = ByteArray(2),
+                            ),
+                            engineVersion = "test",
+                        ),
+                    )
+                }
+                assertEquals(profile.id, result.speechProfileId)
+                assertEquals("zh", result.detectedLanguage)
+            } finally {
+                dir.deleteRecursively()
+            }
+        }
+    }
+
+    @Test
+    fun `recognition metadata defaults preserve old callers`() {
+        val result = RecognitionResult(
+            sessionId = "legacy",
+            rawText = "文本",
+            normalizedText = "文本",
+            confidence = null,
+        )
+        assertEquals(SpeechProfile.MANDARIN.id, result.speechProfileId)
+        assertEquals(null, result.detectedLanguage)
     }
 
     @Test

@@ -23,9 +23,25 @@ from pathlib import Path
 from typing import Any
 
 try:  # 支持 python3 tools/eval_asr.py 与包内 import 两种调用方式。
-    from validate_dataset import Findings, check_consent, check_speakers, find_audio_file, load_json
+    from validate_dataset import (
+        CONSENT_GRANTS,
+        Findings,
+        check_consent,
+        check_speakers,
+        find_audio_file,
+        load_json,
+        speech_metadata,
+    )
 except ModuleNotFoundError:  # pragma: no cover - 包导入路径由测试与真实 CLI 共同覆盖
-    from tools.validate_dataset import Findings, check_consent, check_speakers, find_audio_file, load_json
+    from tools.validate_dataset import (
+        CONSENT_GRANTS,
+        Findings,
+        check_consent,
+        check_speakers,
+        find_audio_file,
+        load_json,
+        speech_metadata,
+    )
 
 
 NEGATION_MARKERS = ["不", "没", "没有", "别", "勿", "无", "未", "非", "莫"]
@@ -101,6 +117,8 @@ class SegmentOutcome:
     speaker_id: str
     severity: str
     category: str
+    speech_profile_id: str
+    dialect_group: str
     cer: float
     critical_error: bool
     ref_text: str
@@ -121,7 +139,10 @@ class EvaluationResult:
 
     @property
     def coverage(self) -> float:
-        return len(self.matched) / self.eligible if self.eligible else 0.0
+        """只把真正生成指标的唯一片段计入分子，而不是仅按 ID 对齐。"""
+
+        evaluated = {outcome.segment_id for outcome in self.outcomes}
+        return len(evaluated) / self.eligible if self.eligible else 0.0
 
 
 def extract_number_context(text: str) -> list:
@@ -191,6 +212,11 @@ def evaluate_detailed(
     for segment_id, ref_record in ref.items():
         speaker_id = ref_record.get("speakerId") or "unknown"
         excluded = False
+        try:
+            speech_metadata(ref_record)
+        except ValueError as error:
+            result.errors.append(f"{segment_id} {error}")
+            excluded = True
 
         # 撤回/未授权是数据合规错误，即使同时还有 unconfirmed/empty 也不能漏报。
         if ref_record.get("withdrawnAt"):
@@ -199,6 +225,7 @@ def evaluate_detailed(
             excluded = True
         if consent is not None:
             speaker_consent = consent.get(speaker_id)
+            grants = (speaker_consent.get("grants") or {}) if speaker_consent is not None else {}
             if speaker_consent is None:
                 result.errors.append(f"{segment_id} 的说话人 {speaker_id} 缺少授权记录")
                 excluded = True
@@ -207,10 +234,25 @@ def evaluate_detailed(
                     result.errors.append(f"{segment_id} 的说话人 {speaker_id} 已撤回授权，不得评测")
                     result.excluded["withdrawn"] = result.excluded.get("withdrawn", 0) + 1
                     excluded = True
-                grants = speaker_consent.get("grants") or {}
                 if not grants.get("research_use", False):
                     result.errors.append(f"{segment_id} 的说话人 {speaker_id} 未授权 research_use")
                     excluded = True
+
+            consent_flags = ref_record.get("consentFlags")
+            if not isinstance(consent_flags, list):
+                result.errors.append(f"{segment_id} 的 consentFlags 必须是数组")
+                excluded = True
+            else:
+                if "research_use" not in consent_flags:
+                    result.errors.append(f"{segment_id} 的 consentFlags 必须明确包含 research_use")
+                    excluded = True
+                for flag in consent_flags:
+                    if not isinstance(flag, str) or flag not in CONSENT_GRANTS:
+                        result.errors.append(f"{segment_id} 存在未知 consentFlags: {flag!r}")
+                        excluded = True
+                    elif not grants.get(flag, False):
+                        result.errors.append(f"{segment_id} 使用了当前未授权的用途 {flag}")
+                        excluded = True
 
         source = ref_record.get("referenceSource")
         if source == "unconfirmed":
@@ -260,6 +302,19 @@ def evaluate_detailed(
         if hyp_speaker and ref_record.get("speakerId") and hyp_speaker != ref_record["speakerId"]:
             result.errors.append(f"{segment_id} 的 hyp/ref speakerId 不一致")
             continue
+        expected_profile, expected_locale, expected_group = speech_metadata(ref_record)
+        expected_metadata = {
+            "speechProfileId": expected_profile,
+            "localeTag": expected_locale,
+            "dialectGroup": expected_group,
+        }
+        metadata_mismatch = False
+        for field_name, expected_value in expected_metadata.items():
+            if field_name in hyp_record and hyp_record[field_name] != expected_value:
+                result.errors.append(f"{segment_id} 的 hyp/ref {field_name} 不一致")
+                metadata_mismatch = True
+        if metadata_mismatch:
+            continue
 
         speaker_id = ref_record.get("speakerId") or "unknown"
         speaker = speakers.get(speaker_id, {})
@@ -269,6 +324,7 @@ def evaluate_detailed(
             or prompt_categories.get(ref_record.get("promptId"))
             or "unknown"
         )
+        speech_profile_id, _, dialect_group = speech_metadata(ref_record)
         ref_chars = list(normalize(ref_text))
         hyp_chars = list(normalize(hyp_text))
         distance, _, _, _ = levenshtein(ref_chars, hyp_chars)
@@ -277,6 +333,8 @@ def evaluate_detailed(
             speaker_id=speaker_id,
             severity=severity,
             category=category,
+            speech_profile_id=speech_profile_id,
+            dialect_group=dialect_group,
             cer=distance / len(ref_chars),
             critical_error=has_critical_error(ref_text, hyp_text),
             ref_text=ref_text,
@@ -321,7 +379,8 @@ def report_alignment(result: EvaluationResult) -> None:
         f"对齐：matched={len(result.matched)}  missing={len(result.missing)}  "
         f"extra={len(result.extra)}  eligible={result.eligible}"
     )
-    print(f"有效参考覆盖率 = {result.coverage:.2%} ({len(result.matched)}/{result.eligible})")
+    evaluated_count = len({outcome.segment_id for outcome in result.outcomes})
+    print(f"有效参考覆盖率 = {result.coverage:.2%} ({evaluated_count}/{result.eligible})")
     if result.missing:
         print("  missing IDs: " + ", ".join(result.missing))
     if result.extra:
@@ -345,6 +404,30 @@ def report(outcomes: list) -> None:
     print(f"  关键内容错误率 = {overall.critical_error_rate():.4f} ({overall.critical_errors} / {overall.critical_total})")
     if overall.segments < MIN_SAMPLES_FOR_CLAIM:
         print(f"  [注意] 样本量 {overall.segments} < {MIN_SAMPLES_FOR_CLAIM}，结论仅为探索性观察。")
+
+    by_profile = defaultdict(list)
+    for outcome in outcomes:
+        by_profile[outcome.speech_profile_id].append(outcome)
+    print("-" * 72)
+    print("按 speechProfileId 分层；各 profile 内再按 dialectGroup 分层")
+    print("旧数据缺失字段时按 mandarin / unspecified 处理")
+    print("-" * 72)
+    for profile_id in sorted(by_profile):
+        profile_outcomes = by_profile[profile_id]
+        bucket = summarize(profile_outcomes)
+        print(
+            f"  {profile_id}  片段 {bucket.segments}  CER {bucket.cer():.4f}  "
+            f"关键错误率 {bucket.critical_error_rate():.4f}"
+        )
+        by_dialect_group = defaultdict(list)
+        for outcome in profile_outcomes:
+            by_dialect_group[outcome.dialect_group].append(outcome)
+        for dialect_group in sorted(by_dialect_group):
+            group_bucket = summarize(by_dialect_group[dialect_group])
+            print(
+                f"    dialectGroup={dialect_group}  片段 {group_bucket.segments}  "
+                f"CER {group_bucket.cer():.4f}  关键错误率 {group_bucket.critical_error_rate():.4f}"
+            )
 
     by_speaker = defaultdict(list)
     for outcome in outcomes:
@@ -388,16 +471,19 @@ def report(outcomes: list) -> None:
 
 
 def load_prompt_categories(dataset_dir: Path) -> dict[str, str]:
-    path = dataset_dir / "prompts" / "prompts.json"
-    if not path.is_file():
-        return {}
-    payload = load_json(path)
-    prompts = payload.get("prompts", []) if isinstance(payload, dict) else []
-    return {
-        item["id"]: item["category"]
-        for item in prompts
-        if isinstance(item, dict) and item.get("id") and item.get("category")
-    }
+    categories: dict[str, str] = {}
+    for filename in ("prompts.json", "shandong.json"):
+        path = dataset_dir / "prompts" / filename
+        if not path.is_file():
+            continue
+        payload = load_json(path)
+        prompts = payload.get("prompts", []) if isinstance(payload, dict) else []
+        categories.update({
+            item["id"]: item["category"]
+            for item in prompts
+            if isinstance(item, dict) and item.get("id") and item.get("category")
+        })
+    return categories
 
 
 def main(argv: list[str]) -> int:

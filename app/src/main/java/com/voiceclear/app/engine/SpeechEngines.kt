@@ -29,6 +29,10 @@ data class RecognitionResult(
      * 与可容忍的 warning 分开，避免主层把空文本失败当成识别成功。
      */
     val errorCode: String? = null,
+    /** 本次识别使用的会话档案；旧调用方未传时保持普通话兼容行为。 */
+    val speechProfileId: String = SpeechProfile.DEFAULT.id,
+    /** native 实际返回的语言标识；未加载或失败时保持 null。 */
+    val detectedLanguage: String? = null,
 ) {
     val isSuccess: Boolean
         get() = errorCode == null

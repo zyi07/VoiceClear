@@ -18,6 +18,7 @@ import com.voiceclear.app.engine.RecognitionEngineFactory
 import com.voiceclear.app.engine.RecognitionRequest
 import com.voiceclear.app.engine.RecognitionResult
 import com.voiceclear.app.engine.SenseVoiceRecognitionEngine
+import com.voiceclear.app.engine.SpeechProfile
 import com.voiceclear.app.engine.SynthesisEngine
 import com.voiceclear.app.engine.SynthesisRequest
 import com.voiceclear.app.session.AppSettings
@@ -76,6 +77,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val engineRevision: StateFlow<Long> = _engineRevision.asStateFlow()
     private val engineLoadMutex = Mutex()
     private var engineLoadJob: Job? = null
+    private var engineLoadGeneration = 0L
+    private var engineLoadProfile: SpeechProfile? = null
+
+    /** 测试可替换创建缝；生产仍只走原有模型工厂与下载源。 */
+    internal var recognitionEngineCreator:
+        (android.content.Context, SpeechProfile) -> RecognitionEngineFactory.Created? =
+        { context, profile -> RecognitionEngineFactory.create(context, profile) }
+    internal var recognitionMemoryAssessor:
+        (android.content.Context, Long) -> MemoryGuard.Assessment =
+        { context, modelBytes -> MemoryGuard.assess(context, modelBytes) }
 
     var lastQuality: AudioQuality.Analysis? = null
         private set
@@ -95,6 +106,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private data class SessionRuntime(
         val token: SessionController.Token,
         val engine: RecognitionEngine,
+        val speechProfile: SpeechProfile,
         val startedAt: Long,
         val stageStart: MutableMap<String, Long> = mutableMapOf(),
         val metricsRecorded: AtomicBoolean = AtomicBoolean(false),
@@ -124,23 +136,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     /**
-     * 在 IO 线程准备识别引擎，并通过 job + mutex 去重。模型未就绪或加载失败时
-     * 不会把占位引擎用于真实录音。
+     * 在 IO 线程准备识别引擎，并通过 job + mutex 去重。每次加载绑定 profile 与
+     * generation：切换后即使旧 native 加载无法立即取消，也只能释放，不能覆盖新档案。
      */
     fun ensureRecognitionEngine() {
-        if (senseVoiceEngine != null || engineLoadJob?.isActive == true) return
+        val profile = settings.speechProfile
+        if (senseVoiceEngine?.profile == profile) return
+        if (engineLoadJob?.isActive == true && engineLoadProfile == profile) return
+
+        val generation = ++engineLoadGeneration
+        engineLoadProfile = profile
+        engineLoadJob?.cancel()
+        senseVoiceEngine?.release()
+        senseVoiceEngine = null
+        activeEngine = FakeRecognitionEngine()
+        engineIssue = ErrorCodes.ASR_MODEL_MISSING
+        modelLoadMs = 0L
+        _engineRevision.value += 1
+
         engineLoadJob = viewModelScope.launch {
             engineLoadMutex.withLock {
-                if (senseVoiceEngine != null) return@withLock
+                if (generation != engineLoadGeneration || profile != settings.speechProfile) {
+                    return@withLock
+                }
                 var unownedEngine: SenseVoiceRecognitionEngine? = null
                 try {
                     val outcome = try {
                         withContext(Dispatchers.IO) {
-                            val created = RecognitionEngineFactory.create(getApplication())
+                            val created = recognitionEngineCreator(getApplication(), profile)
                                 ?: return@withContext null
                             unownedEngine = created.engine
 
-                            val assessment = MemoryGuard.assess(
+                            val assessment = recognitionMemoryAssessor(
                                 getApplication(),
                                 created.engine.modelBytes(),
                             )
@@ -174,6 +201,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
 
+                    // IO 返回后、安装前再校验一次，旧 profile 的结果只能走 finally 释放。
+                    if (generation != engineLoadGeneration || profile != settings.speechProfile) {
+                        return@withLock
+                    }
                     when (outcome) {
                         null -> {
                             activeEngine = FakeRecognitionEngine()
@@ -199,13 +230,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             DiagnosticLog.i(
                                 "Main",
                                 "识别引擎就绪: " + outcome.engine.engineId +
+                                    ", profile=" + outcome.engine.profile.id +
                                     ", 加载耗时=" + modelLoadMs + "ms",
                             )
                         }
                     }
                     _engineRevision.value += 1
                 } finally {
-                    // 失败、异常或 ViewModel 在 IO 加载期间销毁，都不能泄漏 native 引擎。
+                    // 失败、过期、异常或 ViewModel 销毁都不能泄漏 native 引擎。
                     unownedEngine?.release()
                 }
             }
@@ -229,7 +261,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!sessionController.startSession()) return ErrorCodes.SESSION_STALE
         val token = sessionController.currentToken()
             ?: return ErrorCodes.SESSION_STALE
-        val runtime = SessionRuntime(token, engine, System.currentTimeMillis())
+        val runtime = SessionRuntime(
+            token = token,
+            engine = engine,
+            speechProfile = engine.profile,
+            startedAt = System.currentTimeMillis(),
+        )
         currentRuntime = runtime
 
         audioPlayback.stop()
@@ -566,6 +603,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
+    /**
+     * 非 busy 时保存识别档案并重载引擎。busy 拒绝在持久化之前发生；
+     * 重载期间旧加载由 generation 失效，旧实例只释放、不安装。
+     */
+    fun applySpeechProfile(profile: SpeechProfile = settings.speechProfile): Boolean {
+        if (sessionController.state.value.isBusy) {
+            DiagnosticLog.w("Main", "会话进行中，拒绝切换识别档案")
+            return false
+        }
+        settings.speechProfile = profile
+        ensureRecognitionEngine()
+        DiagnosticLog.i("Main", "已应用识别档案: " + profile.id)
+        return true
+    }
+
     fun recordMetrics(confidence: Float? = null, failed: Boolean, cancelled: Boolean) {
         val runtime = currentRuntime ?: return
         recordMetrics(runtime, confidence, failed, cancelled)
@@ -587,6 +639,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             totalMs = System.currentTimeMillis() - runtime.startedAt,
             outcome = metricsCollector.deriveOutcome(confidence, failed, cancelled),
             modelVersion = ENGINE_VERSION + "+" + runtime.engine.engineId,
+            speechProfileId = runtime.speechProfile.id,
             qualityFlags = lastCapturedSegment
                 ?.takeIf { it.sessionId == runtime.token.sessionId }
                 ?.qualityFlags
@@ -613,6 +666,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         cancelSession()
+        engineLoadGeneration += 1
         engineLoadJob?.cancel()
         audioPlayback.stop()
         audioCapture.cancel()

@@ -247,16 +247,25 @@ class CaptureStore(private val context: Context) {
                     firstSessionDate = sessionDates.firstOrNull() ?: "unspecified",
                     sessionCount = owned.map { it.sessionId }.distinct().size,
                     speakingEnvironment = owned.map { it.environment }.distinct().sorted(),
+                    speechProfileId = existing?.speechProfileId ?: owned.first().speechProfileId,
+                    localeTag = existing?.localeTag ?: owned.first().localeTag,
+                    dialectGroup = existing?.dialectGroup ?: owned.first().dialectGroup,
                 ),
             )
         }
         val split = mapOf("train" to speakerIds, "dev" to emptyList(), "test" to emptyList())
         split.forEach { (name, members) -> writeSplit(name, members) }
+        val speechProfiles = segments.map { it.speechProfileId }.toSet()
+        val cohortTarget = when {
+            speechProfiles == setOf("shandong") -> "听障相关发音不清的山东方言成人"
+            speechProfiles.containsAll(setOf("mandarin", "shandong")) -> "听障相关发音不清的普通话与山东方言成人"
+            else -> "听障相关发音不清的普通话成人"
+        }
         writeManifest(
             CaptureManifest(
                 datasetVersion = "v0.1.0",
                 createdAt = createdAt,
-                cohortTarget = "听障相关发音不清的普通话成人",
+                cohortTarget = cohortTarget,
                 speakers = speakerIds.map { speakerId ->
                     val owned = grouped.getValue(speakerId)
                     ManifestSpeakerEntry(
@@ -320,10 +329,13 @@ class CaptureStore(private val context: Context) {
             File(transcriptTarget, "$sessionId.jsonl").writeText(content)
         }
 
-        val promptTarget = File(staging, "$PROMPTS_DIR/prompts.json")
-        promptTarget.parentFile?.mkdirs()
-        context.assets.open(PromptLibrary.ASSET_PATH).use { input ->
-            FileOutputStream(promptTarget).use { output -> input.copyTo(output) }
+        listOf("mandarin", "shandong").forEach { profileId ->
+            val assetPath = PromptLibrary.assetPathFor(profileId)
+            val promptTarget = File(staging, "$PROMPTS_DIR/${assetPath.substringAfterLast('/')}")
+            promptTarget.parentFile?.mkdirs()
+            context.assets.open(assetPath).use { input ->
+                FileOutputStream(promptTarget).use { output -> input.copyTo(output) }
+            }
         }
 
         if (includeAudio) {

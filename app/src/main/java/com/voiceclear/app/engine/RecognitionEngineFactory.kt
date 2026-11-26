@@ -17,7 +17,7 @@ object RecognitionEngineFactory {
     const val MODE_FAKE = "fake"
 
     /** 创建引擎。真实引擎在模型未就绪时返回 null。 */
-    fun create(context: Context): Created? {
+    fun create(context: Context, profile: SpeechProfile = SpeechProfile.DEFAULT): Created? {
         val downloadManager = ModelDownloadManager(context)
         if (!downloadManager.isReady()) {
             DiagnosticLog.w(
@@ -29,6 +29,7 @@ object RecognitionEngineFactory {
 
         val engine = SenseVoiceRecognitionEngine(
             modelDirPath = downloadManager.modelDir().absolutePath,
+            profile = profile,
         )
         return Created(
             engine = engine,

@@ -1,0 +1,57 @@
+{
+  "version": "v1.0",
+  "speechProfileId": "shandong",
+  "localeTag": "zh-CN",
+  "note": "山东方言自然朗读句库。文本采用自然书面中文，由说话人按本地真实发音朗读；不提供注音、谐音字或所谓统一山东词。",
+  "coverage": {
+    "daily": "日常生活叙述、请求与安排",
+    "negation": "否定、婉拒、纠正与禁止",
+    "number": "时刻、金额、日期、楼层、数量与期限",
+    "direction": "方位、路线、位置与动作方向",
+    "medical": "症状、用药、复诊、过敏与检查",
+    "dialogue": "自然问答与对话修复"
+  },
+  "prompts": [
+    { "id": "SD0001", "category": "daily", "text": "今天早上有点凉，出门记得添件衣服。", "note": "日常提醒" },
+    { "id": "SD0002", "category": "daily", "text": "我吃过早饭了，等会儿再去买菜。", "note": "生活安排" },
+    { "id": "SD0003", "category": "daily", "text": "家里来了客人，我去烧一壶热水。", "note": "家庭场景" },
+    { "id": "SD0004", "category": "daily", "text": "这条路正在维修，我们从旁边绕过去。", "note": "出行叙述" },
+    { "id": "SD0005", "category": "daily", "text": "你把椅子往里面挪一挪，大家都能坐下。", "note": "日常请求" },
+    { "id": "SD0006", "category": "daily", "text": "明天如果下雨，我们就不去公园了。", "note": "条件安排" },
+
+    { "id": "SD0007", "category": "negation", "text": "这件事我还没有想清楚，暂时不作决定。", "note": "否定与暂缓" },
+    { "id": "SD0008", "category": "negation", "text": "那不是我的杯子，请别拿走。", "note": "否定与禁止" },
+    { "id": "SD0009", "category": "negation", "text": "你不用等我，我可能要晚一点回来。", "note": "婉拒与安排" },
+    { "id": "SD0010", "category": "negation", "text": "我从来没有去过那个地方，不认识那里的路。", "note": "经历否定" },
+    { "id": "SD0011", "category": "negation", "text": "别把窗户全关上，屋里需要通通风。", "note": "禁止与建议" },
+    { "id": "SD0012", "category": "negation", "text": "这个办法行不通，我们得另外想办法。", "note": "否定与纠正" },
+
+    { "id": "SD0013", "category": "number", "text": "公交车早上六点二十发车，请提前五分钟到站。", "note": "时刻与时长" },
+    { "id": "SD0014", "category": "number", "text": "这件衣服一百二十九元，两条毛巾二十五元。", "note": "金额与数量" },
+    { "id": "SD0015", "category": "number", "text": "会议改到星期四下午三点四十，地点不变。", "note": "日期与时刻" },
+    { "id": "SD0016", "category": "number", "text": "我的房间在十二楼，电梯出门向右转。", "note": "楼层与方向" },
+    { "id": "SD0017", "category": "number", "text": "请在七月十五号上午九点之前回复。", "note": "日期与期限" },
+    { "id": "SD0018", "category": "number", "text": "这袋米重十公斤，够我们吃两个星期。", "note": "重量与时长" },
+
+    { "id": "SD0019", "category": "direction", "text": "出了南门一直向东走，第二个路口左转。", "note": "路线指引" },
+    { "id": "SD0020", "category": "direction", "text": "超市在医院的西北方向，走路大约十分钟。", "note": "相对方位" },
+    { "id": "SD0021", "category": "direction", "text": "从火车站北广场出来，朝右边看就能看见站牌。", "note": "地点与视线方向" },
+    { "id": "SD0022", "category": "direction", "text": "请到前面路口掉头，再沿河西岸向南走。", "note": "连续路线" },
+    { "id": "SD0023", "category": "direction", "text": "卫生室在办公楼后面，从东侧楼梯上二层。", "note": "建筑内部方位" },
+    { "id": "SD0024", "category": "direction", "text": "你把书放到靠窗的桌子上，钥匙放在抽屉里。", "note": "物品位置" },
+
+    { "id": "SD0025", "category": "medical", "text": "我从昨天晚上开始咳嗽，今天还有些发热。", "note": "症状与时间" },
+    { "id": "SD0026", "category": "medical", "text": "医生，请问我这个药饭前吃还是饭后吃？", "note": "用药咨询" },
+    { "id": "SD0027", "category": "medical", "text": "我的左腿疼了三天，走路时疼得更明显。", "note": "症状部位与时长" },
+    { "id": "SD0028", "category": "medical", "text": "请帮我预约下星期二的复诊，上午下午都可以。", "note": "复诊预约" },
+    { "id": "SD0029", "category": "medical", "text": "我对青霉素过敏，开药前请再核对一下。", "note": "过敏史" },
+    { "id": "SD0030", "category": "medical", "text": "护士说先量血压，再到三楼做心电图。", "note": "检查流程" },
+
+    { "id": "SD0031", "category": "dialogue", "text": "你今天想去哪里？我想先去书店，再回家。", "note": "问答与计划" },
+    { "id": "SD0032", "category": "dialogue", "text": "现在方便说话吗？方便，你慢慢讲。", "note": "简短问答" },
+    { "id": "SD0033", "category": "dialogue", "text": "需要我帮忙吗？谢谢，请帮我拿一下外套。", "note": "请求与回应" },
+    { "id": "SD0034", "category": "dialogue", "text": "我们什么时候见面？那就明天上午十点吧。", "note": "约定时间" },
+    { "id": "SD0035", "category": "dialogue", "text": "你听明白了吗？最后一句话请再解释一下。", "note": "对话修复" },
+    { "id": "SD0036", "category": "dialogue", "text": "饭菜合不合口味？很合适，不用再加了。", "note": "评价与否定回应" }
+  ]
+}

@@ -1,7 +1,11 @@
 package com.voiceclear.app
 
+import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import com.voiceclear.app.engine.SpeechProfile
 import com.voiceclear.app.session.SessionState
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -10,6 +14,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 /**
@@ -24,6 +29,16 @@ class MainViewModelTest {
     private fun createViewModel(): MainViewModel {
         val application = ApplicationProvider.getApplicationContext<android.app.Application>()
         return MainViewModel(application)
+    }
+
+    private fun awaitWhilePumpingMain(latch: CountDownLatch): Boolean {
+        val deadline = System.currentTimeMillis() + 2_000
+        while (latch.count > 0 && System.currentTimeMillis() < deadline) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(10)
+        }
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        return latch.count == 0L
     }
 
     @Test
@@ -108,6 +123,102 @@ class MainViewModelTest {
         assertFalse(viewModel.applyAudioSource(replacement))
         assertEquals(original, viewModel.settings.audioSource)
         viewModel.cancelSession()
+    }
+
+    @Test
+    fun `busy speech profile change is rejected without persisting`() {
+        val viewModel = createViewModel()
+        val original = viewModel.settings.speechProfile
+        val replacement = SpeechProfile.ALL.first { it != original }
+        viewModel.sessionController.startSession()
+
+        assertFalse(viewModel.applySpeechProfile(replacement))
+        assertEquals(original, viewModel.settings.speechProfile)
+        viewModel.cancelSession()
+    }
+
+    @Test
+    fun `stale engine load cannot replace newly selected profile`() {
+        val viewModel = createViewModel()
+        val dir = java.io.File.createTempFile("profile-race", ".dir").apply {
+            delete()
+            mkdirs()
+        }
+        java.io.File(dir, com.voiceclear.app.engine.SenseVoiceRecognitionEngine.MODEL_FILE)
+            .writeBytes(byteArrayOf(1))
+        java.io.File(dir, com.voiceclear.app.engine.SenseVoiceRecognitionEngine.TOKENS_FILE)
+            .writeBytes(byteArrayOf(1))
+        val oldLoadStarted = CountDownLatch(1)
+        val finishOldLoad = CountDownLatch(1)
+        val oldReleased = CountDownLatch(1)
+        val newLoadFinished = CountDownLatch(1)
+
+        try {
+            viewModel.settings.speechProfile = SpeechProfile.MANDARIN
+            viewModel.recognitionMemoryAssessor = { _, _ ->
+                com.voiceclear.app.engine.MemoryGuard.Assessment(
+                    verdict = com.voiceclear.app.engine.MemoryGuard.Verdict.OK,
+                    modelMb = 0L,
+                    requiredMb = 128L,
+                    availableMb = 1_024L,
+                    totalRamMb = 2_048L,
+                    heapMaxMb = 512L,
+                    lowMemoryDevice = false,
+                )
+            }
+            viewModel.recognitionEngineCreator = { context, profile ->
+                val engine = com.voiceclear.app.engine.SenseVoiceRecognitionEngine(
+                    dir.absolutePath,
+                    com.voiceclear.app.engine.SenseVoiceNativeFactory {
+                        if (profile == SpeechProfile.MANDARIN) {
+                            oldLoadStarted.countDown()
+                            finishOldLoad.await(5, TimeUnit.SECONDS)
+                        }
+                        object : com.voiceclear.app.engine.SenseVoiceNativeAdapter {
+                            override fun decode(samples: FloatArray, sampleRate: Int) =
+                                com.voiceclear.app.engine.SenseVoiceNativeResult("测试", "zh")
+
+                            override fun release() {
+                                if (profile == SpeechProfile.MANDARIN) oldReleased.countDown()
+                            }
+                        }
+                    },
+                    profile,
+                )
+                if (profile == SpeechProfile.SHANDONG) newLoadFinished.countDown()
+                com.voiceclear.app.engine.RecognitionEngineFactory.Created(
+                    engine = engine,
+                    mode = com.voiceclear.app.engine.RecognitionEngineFactory.MODE_REAL,
+                    modelDownloadManager = com.voiceclear.app.engine.ModelDownloadManager(context),
+                )
+            }
+
+            viewModel.ensureRecognitionEngine()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertTrue("旧档案应已进入 native 加载", awaitWhilePumpingMain(oldLoadStarted))
+
+            assertTrue(viewModel.applySpeechProfile(SpeechProfile.SHANDONG))
+            finishOldLoad.countDown()
+            assertTrue("旧 native 实例应被释放", awaitWhilePumpingMain(oldReleased))
+            assertTrue("新档案应完成加载", awaitWhilePumpingMain(newLoadFinished))
+
+            val deadline = System.currentTimeMillis() + 2_000
+            while (viewModel.senseVoiceEngine?.profile != SpeechProfile.SHANDONG &&
+                System.currentTimeMillis() < deadline
+            ) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                Thread.sleep(10)
+            }
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(SpeechProfile.SHANDONG, viewModel.senseVoiceEngine?.profile)
+            assertEquals(SpeechProfile.SHANDONG, viewModel.settings.speechProfile)
+            assertEquals(SpeechProfile.SHANDONG, viewModel.senseVoiceEngine?.profile)
+            assertTrue(viewModel.activeEngine === viewModel.senseVoiceEngine)
+        } finally {
+            finishOldLoad.countDown()
+            viewModel.senseVoiceEngine?.release()
+            dir.deleteRecursively()
+        }
     }
 
     @Test

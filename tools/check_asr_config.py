@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """SenseVoice 配置参数对照检查。
 
-把 Kotlin 源码里的关键推理参数与官方 sherpa-onnx Python API 的默认值逐项对照，
-不一致就退出码非零。常量右值由受限解析器求值，不使用 eval/exec，也不接受
-函数调用、属性访问或字符串模板。
+把 Kotlin 源码里的关键推理参数与项目固定配置逐项对照。除 LANGUAGE 外，
+期望值沿用官方 sherpa-onnx Python API 默认值；LANGUAGE 是项目为中文识别有意
+固定的 zh，不再使用官方默认空值。常量右值由受限解析器求值，不使用 eval/exec，
+也不接受函数调用、属性访问或字符串模板。
 
 用法：
     python3 tools/check_asr_config.py
@@ -21,11 +22,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ENGINE = ROOT / "app/src/main/java/com/voiceclear/app/engine/SenseVoiceRecognitionEngine.kt"
 
-# 参数名 -> 官方 Python API (sherpa-onnx) 的对应默认值
+# 参数名 -> 项目固定值（LANGUAGE 有意覆盖官方默认空值，其余与官方一致）
 EXPECTED = {
     "SAMPLE_RATE": 16000,      # from_sense_voice(sample_rate=16000)
     "FEATURE_DIM": 80,         # from_sense_voice(feature_dim=80)
-    "LANGUAGE": "",            # from_sense_voice(language="")
+    "LANGUAGE": "zh",          # 项目有意固定中文；官方默认值为 ""
     "TOKENS_FILE": "tokens.txt",
     "MODEL_FILE": "model.int8.onnx",
 }
@@ -213,9 +214,9 @@ def main() -> int:
         print(f"错误：无法读取引擎源码: {error}")
         return 2
 
-    print("SenseVoice 配置对照检查")
+    print("SenseVoice 项目配置对照检查")
     print("=" * 56)
-    print("对照基准: 官方 sherpa-onnx Python API 默认值")
+    print("对照基准: 项目固定值；LANGUAGE=zh 为有意覆盖官方默认空值")
     print()
     problems = check_source(source)
     print()
@@ -226,7 +227,7 @@ def main() -> int:
         print()
         print("这些参数错误或无法安全解析，必须修正后再运行识别。")
         return 1
-    print("配置校验通过（" + str(len(EXPECTED)) + " 项参数与官方一致）")
+    print("配置校验通过（" + str(len(EXPECTED)) + " 项参数符合项目固定配置）")
     return 0
 
 

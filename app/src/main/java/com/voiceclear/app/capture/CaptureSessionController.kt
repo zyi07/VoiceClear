@@ -12,7 +12,21 @@ class CaptureSessionController(
     val speakerId: String,
     val sessionId: String = UUID.randomUUID().toString(),
     val sessionDate: String,
+    val speechProfileId: String = "mandarin",
+    val localeTag: String = "zh-CN",
+    val dialectGroup: String = "unspecified",
 ) {
+
+    init {
+        require(speechProfileId in setOf("mandarin", "shandong")) { "未知 speechProfileId" }
+        require(localeTag == "zh-CN") { "当前语料只支持 zh-CN localeTag" }
+        require(dialectGroup in setOf("jilu", "zhongyuan", "jiaoliao", "unspecified")) {
+            "未知 dialectGroup"
+        }
+        require(speechProfileId != "mandarin" || dialectGroup == "unspecified") {
+            "mandarin 的 dialectGroup 必须为 unspecified"
+        }
+    }
 
     enum class Phase {
         IDLE,
@@ -116,6 +130,9 @@ class CaptureSessionController(
             guideVersion = CaptureStore.GUIDELINE_VERSION,
             consentFlags = consentFlags.distinct(),
             audioFileName = CaptureStore.audioRelativePath(sessionId, segmentId),
+            speechProfileId = speechProfileId,
+            localeTag = localeTag,
+            dialectGroup = dialectGroup,
         )
         segments.add(segment)
         phase = if (scene == CaptureScene.SPONTANEOUS) Phase.AWAITING_INTENT else Phase.SAVED

@@ -16,6 +16,8 @@ import com.google.android.material.button.MaterialButton
 import com.voiceclear.app.R
 import com.voiceclear.app.engine.AudioCapture
 import com.voiceclear.app.engine.AudioSegment
+import com.voiceclear.app.engine.SpeechProfile
+import com.voiceclear.app.session.AppSettings
 import com.voiceclear.app.session.DiagnosticLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,9 +30,14 @@ import java.util.Locale
 /** 研究采集界面。所有研究用途默认拒绝，只有用户逐项明确选择后才可录音和导出。 */
 class CaptureActivity : ComponentActivity() {
 
+    companion object {
+        private val DIALECT_GROUPS = listOf("unspecified", "jilu", "zhongyuan", "jiaoliao")
+    }
+
     private lateinit var store: CaptureStore
     private lateinit var audioCapture: AudioCapture
     private lateinit var controller: CaptureSessionController
+    private lateinit var settings: AppSettings
 
     private lateinit var speakerInfo: TextView
     private lateinit var statsText: TextView
@@ -39,6 +46,8 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var promptNote: TextView
     private lateinit var statusText: TextView
     private lateinit var recordButton: MaterialButton
+    private lateinit var speechProfileButton: MaterialButton
+    private lateinit var dialectGroupButton: MaterialButton
     private lateinit var promptButton: MaterialButton
     private lateinit var spontaneousButton: MaterialButton
     private lateinit var exportButton: MaterialButton
@@ -48,6 +57,7 @@ class CaptureActivity : ComponentActivity() {
 
     private var prompts: List<CapturePrompt> = emptyList()
     private var speakerId: String = ""
+    private var dialectGroup: String = "unspecified"
     private var captureBusy = false
     private var stopping = false
     private var captureJob: Job? = null
@@ -63,7 +73,12 @@ class CaptureActivity : ComponentActivity() {
         setContentView(R.layout.activity_capture)
         store = CaptureStore(applicationContext)
         audioCapture = AudioCapture(applicationContext)
+        settings = AppSettings(applicationContext)
         speakerId = loadOrCreateSpeakerId()
+        dialectGroup = getSharedPreferences("voiceclear_capture", MODE_PRIVATE)
+            .getString("dialect_group", null)
+            ?.takeIf { it in DIALECT_GROUPS }
+            ?: "unspecified"
         store.ensureConsent(speakerId)
         controller = newController()
 
@@ -74,6 +89,8 @@ class CaptureActivity : ComponentActivity() {
         promptNote = findViewById(R.id.currentPromptNote)
         statusText = findViewById(R.id.captureStatus)
         recordButton = findViewById(R.id.captureRecordButton)
+        speechProfileButton = findViewById(R.id.speechProfileButton)
+        dialectGroupButton = findViewById(R.id.dialectGroupButton)
         promptButton = findViewById(R.id.promptButton)
         spontaneousButton = findViewById(R.id.captureSpontaneousButton)
         exportButton = findViewById(R.id.captureExportButton)
@@ -89,6 +106,8 @@ class CaptureActivity : ComponentActivity() {
         clearButton.setOnClickListener { onClearClicked() }
         withdrawButton.setOnClickListener { onWithdrawClicked() }
         promptButton.setOnClickListener { onPickPromptClicked() }
+        speechProfileButton.setOnClickListener { onSpeechProfileClicked() }
+        dialectGroupButton.setOnClickListener { onDialectGroupClicked() }
         recordButton.setOnClickListener { onRecordClicked() }
 
         prompts = loadPrompts()
@@ -96,16 +115,25 @@ class CaptureActivity : ComponentActivity() {
         refresh()
     }
 
-    private fun newController() = CaptureSessionController(
-        speakerId = speakerId,
-        sessionDate = currentDate(),
-    )
+    private fun newController(): CaptureSessionController {
+        val profile = settings.speechProfile
+        return CaptureSessionController(
+            speakerId = speakerId,
+            sessionDate = currentDate(),
+            speechProfileId = profile.id,
+            localeTag = "zh-CN",
+            dialectGroup = if (profile == SpeechProfile.SHANDONG) dialectGroup else "unspecified",
+        )
+    }
 
     private fun loadPrompts(): List<CapturePrompt> {
         return try {
-            val text = assets.open(PromptLibrary.ASSET_PATH).bufferedReader().use { it.readText() }
+            val profileId = settings.speechProfile.id
+            val text = assets.open(PromptLibrary.assetPathFor(profileId)).bufferedReader().use { it.readText() }
             val parsed = PromptLibrary.parse(text)
-            if (parsed.isEmpty()) statusText.setText(R.string.capture_no_prompts)
+            if (parsed.isEmpty() || PromptLibrary.missingCategories(parsed, profileId).isNotEmpty()) {
+                statusText.setText(R.string.capture_no_prompts)
+            }
             parsed
         } catch (error: Exception) {
             statusText.setText(R.string.capture_no_prompts)
@@ -126,6 +154,61 @@ class CaptureActivity : ComponentActivity() {
 
     private fun currentTimestamp(): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
+
+    private fun onSpeechProfileClicked() {
+        if (captureBusy) return
+        val profiles = SpeechProfile.entries
+        AlertDialog.Builder(this)
+            .setTitle(R.string.capture_speech_profile_title)
+            .setItems(profiles.map { it.displayName }.toTypedArray()) { _, which ->
+                if (captureBusy) return@setItems
+                val selected = profiles[which]
+                if (selected == settings.speechProfile) return@setItems
+                settings.speechProfile = selected
+                prompts = loadPrompts()
+                rebuildControllerAfterMetadataChange()
+            }
+            .setNegativeButton(R.string.capture_cancel, null)
+            .show()
+    }
+
+    private fun onDialectGroupClicked() {
+        if (captureBusy || settings.speechProfile != SpeechProfile.SHANDONG) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.capture_dialect_group_title)
+            .setItems(DIALECT_GROUPS.map { dialectGroupLabel(it) }.toTypedArray()) { _, which ->
+                if (captureBusy) return@setItems
+                val selected = DIALECT_GROUPS[which]
+                if (selected == dialectGroup) return@setItems
+                dialectGroup = selected
+                getSharedPreferences("voiceclear_capture", MODE_PRIVATE).edit {
+                    putString("dialect_group", selected)
+                }
+                rebuildControllerAfterMetadataChange()
+                if (selected == "unspecified") {
+                    statusText.setText(R.string.capture_dialect_group_unspecified)
+                }
+            }
+            .setNegativeButton(R.string.capture_cancel, null)
+            .show()
+    }
+
+    private fun rebuildControllerAfterMetadataChange() {
+        controller = newController()
+        promptText.visibility = View.GONE
+        promptNote.visibility = View.GONE
+        statusText.setText(R.string.capture_status_idle)
+        refresh()
+    }
+
+    private fun dialectGroupLabel(id: String): String = getString(
+        when (id) {
+            "jilu" -> R.string.dialect_group_jilu
+            "zhongyuan" -> R.string.dialect_group_zhongyuan
+            "jiaoliao" -> R.string.dialect_group_jiaoliao
+            else -> R.string.dialect_group_unspecified
+        },
+    )
 
     private fun onPickPromptClicked() {
         if (captureBusy) return
@@ -417,6 +500,16 @@ class CaptureActivity : ComponentActivity() {
             String.format(Locale.CHINA, "%.1f 小时", stats.totalHours),
         )
         guidanceText.text = controller.guidanceNote()
+        val profile = settings.speechProfile
+        speechProfileButton.text = getString(R.string.capture_speech_profile_format, profile.displayName)
+        val shandong = profile == SpeechProfile.SHANDONG
+        dialectGroupButton.visibility = if (shandong) View.VISIBLE else View.GONE
+        if (shandong) {
+            dialectGroupButton.text = getString(
+                R.string.capture_dialect_group_format,
+                dialectGroupLabel(dialectGroup),
+            )
+        }
         val withdrawn = store.readConsent(speakerId)?.withdrawnAt != null
         val selectable = controller.phase == CaptureSessionController.Phase.PROMPT_SELECTED ||
             controller.phase == CaptureSessionController.Phase.SAVED
@@ -432,8 +525,17 @@ class CaptureActivity : ComponentActivity() {
                 R.string.capture_record
             },
         )
-        listOf(promptButton, spontaneousButton, exportButton, audioExportButton, clearButton, withdrawButton)
-            .forEach { it.isEnabled = !captureBusy }
+        listOf(
+            promptButton,
+            speechProfileButton,
+            dialectGroupButton,
+            spontaneousButton,
+            exportButton,
+            audioExportButton,
+            clearButton,
+            withdrawButton,
+        ).forEach { it.isEnabled = !captureBusy }
+        dialectGroupButton.isEnabled = !captureBusy && shandong
     }
 
     override fun onDestroy() {

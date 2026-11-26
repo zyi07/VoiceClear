@@ -41,6 +41,12 @@ data class CaptureSegment(
     /** 保留策略删除音频后置为 false；记录保留作审计，但不再计入有效数据。 */
     val audioAvailable: Boolean = true,
     val deletionReason: String? = null,
+    /** 语料采集配置；缺失的旧数据始终按普通话解释。 */
+    val speechProfileId: String = "mandarin",
+    /** ASR 语言标签，不用于表示方言内部差异。 */
+    val localeTag: String = "zh-CN",
+    /** 山东方言分区；普通话及未补录分区的数据均为 unspecified。 */
+    val dialectGroup: String = "unspecified",
 )
 
 /** 场景类型，对应 schema 的 scene 字段。 */
@@ -86,6 +92,9 @@ data class CaptureSpeaker(
     val firstSessionDate: String,
     val sessionCount: Int,
     val speakingEnvironment: List<String>,
+    val speechProfileId: String = "mandarin",
+    val localeTag: String = "zh-CN",
+    val dialectGroup: String = "unspecified",
 ) {
     companion object {
         const val SEVERITY_SOURCE_ADVISOR = "professional_advisor"

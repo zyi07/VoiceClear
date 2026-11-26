@@ -52,8 +52,12 @@ internal fun interface SenseVoiceNativeFactory {
 class SenseVoiceRecognitionEngine internal constructor(
     private val modelDirPath: String,
     private val nativeFactory: SenseVoiceNativeFactory,
+    val profile: SpeechProfile = SpeechProfile.DEFAULT,
 ) : RecognitionEngine {
-    constructor(modelDirPath: String) : this(
+    constructor(
+        modelDirPath: String,
+        profile: SpeechProfile = SpeechProfile.DEFAULT,
+    ) : this(
         modelDirPath,
         SenseVoiceNativeFactory { config ->
             val recognizer = OfflineRecognizer(null, config)
@@ -73,6 +77,7 @@ class SenseVoiceRecognitionEngine internal constructor(
                 override fun release() = recognizer.release()
             }
         },
+        profile,
     )
 
     companion object {
@@ -96,12 +101,9 @@ class SenseVoiceRecognitionEngine internal constructor(
         const val FEATURE_DIM = 80
 
         /**
-         * 语言标识。留空表示自动检测。
-         *
-         * 官方 Python API 的默认值就是 ""；显式填 "zh" 实测同样可用，
-         * 但留空可同时支持中英日韩粤，与模型的多语种能力一致。
+         * 两种会话档案都显式使用中文配置；档案只标记实验分组，不改变模型能力。
          */
-        const val LANGUAGE = ""
+        const val LANGUAGE = "zh"
         const val NUM_THREADS = 2
 
         // 统一错误码定义见 session/ErrorCodes.kt。
@@ -172,7 +174,7 @@ class SenseVoiceRecognitionEngine internal constructor(
             )
             val senseVoiceConfig = OfflineSenseVoiceModelConfig(
                 model = modelPath,
-                language = LANGUAGE,
+                language = profile.asrLanguage,
                 useInverseTextNormalization = true,
             )
             val modelConfig = OfflineModelConfig(
@@ -246,6 +248,8 @@ class SenseVoiceRecognitionEngine internal constructor(
                 confidence = null,
                 warnings = emptyList(),
                 errorCode = null,
+                speechProfileId = profile.id,
+                detectedLanguage = result.lang,
             )
         } catch (error: Throwable) {
             DiagnosticLog.e(
@@ -264,6 +268,7 @@ class SenseVoiceRecognitionEngine internal constructor(
         confidence = null,
         warnings = listOf(code),
         errorCode = code,
+        speechProfileId = profile.id,
     )
 
     /** 独立校验输入格式，避免把采样率/声道/PCM 错误误报成空音频。 */

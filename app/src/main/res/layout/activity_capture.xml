@@ -49,6 +49,25 @@
             android:textSize="13sp" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/speechProfileButton"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:minHeight="56dp"
+            android:text="@string/capture_speech_profile" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/dialectGroupButton"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:minHeight="56dp"
+            android:text="@string/capture_dialect_group"
+            android:visibility="gone" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/promptButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

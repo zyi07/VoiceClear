@@ -69,6 +69,40 @@ class CaptureSessionControllerTest {
         val segment = submit(controller)
         assertEquals("segments/session/raw/${segment.segmentId}.pcm", segment.audioFileName)
         assertTrue(segment.audioAvailable)
+        assertEquals("mandarin", segment.speechProfileId)
+        assertEquals("zh-CN", segment.localeTag)
+        assertEquals("unspecified", segment.dialectGroup)
+    }
+
+    @Test
+    fun `Shandong segment exports profile and dialect group`() {
+        val controller = CaptureSessionController(
+            speakerId = "spk",
+            sessionId = "session",
+            sessionDate = "2026-11-26",
+            speechProfileId = "shandong",
+            localeTag = "zh-CN",
+            dialectGroup = "zhongyuan",
+        )
+        controller.selectPrompt(prompt.copy(id = "SD0001"))
+        controller.startRecording()
+        val segment = submit(controller)
+        assertEquals("shandong", segment.speechProfileId)
+        assertEquals("zh-CN", segment.localeTag)
+        assertEquals("zhongyuan", segment.dialectGroup)
+    }
+
+    @Test
+    fun `Mandarin rejects a dialect subgroup`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CaptureSessionController(
+                speakerId = "spk",
+                sessionId = "session",
+                sessionDate = "2026-11-26",
+                speechProfileId = "mandarin",
+                dialectGroup = "jilu",
+            )
+        }
     }
 
     @Test

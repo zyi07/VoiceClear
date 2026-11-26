@@ -2,6 +2,7 @@ package com.voiceclear.app.session
 
 import android.content.Context
 import com.voiceclear.app.engine.AudioSourceOption
+import com.voiceclear.app.engine.SpeechProfile
 
 /**
  * 应用设置。
@@ -17,6 +18,7 @@ class AppSettings(private val context: Context) {
     companion object {
         private const val PREF_NAME = "voiceclear_settings"
         private const val KEY_AUDIO_SOURCE = "audio_source_id"
+        private const val KEY_SPEECH_PROFILE = "speech_profile_id"
     }
 
     private val prefs
@@ -28,6 +30,14 @@ class AppSettings(private val context: Context) {
         set(value) {
             prefs.edit().putString(KEY_AUDIO_SOURCE, value.id).apply()
             DiagnosticLog.i("Settings", "麦克风音源切换为: " + value.id)
+        }
+
+    /** 当前识别会话档案。 */
+    var speechProfile: SpeechProfile
+        get() = SpeechProfile.fromId(prefs.getString(KEY_SPEECH_PROFILE, null))
+        set(value) {
+            prefs.edit().putString(KEY_SPEECH_PROFILE, value.id).apply()
+            DiagnosticLog.i("Settings", "识别档案切换为: " + value.id)
         }
 
     /** 是否启用系统降噪。 */
@@ -43,6 +53,7 @@ class AppSettings(private val context: Context) {
         return "{" +
             "\"audioSource\":\"" + audioSource.id + "\"," +
             "\"audioSourceDisplayName\":\"" + audioSource.displayName + "\"," +
+            "\"speechProfile\":\"" + speechProfile.id + "\"," +
             "\"noiseSuppression\":" + noiseSuppressionEnabled +
             "}"
     }

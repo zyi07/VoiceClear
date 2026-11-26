@@ -20,6 +20,7 @@ import com.voiceclear.app.capture.CaptureActivity
 import com.voiceclear.app.engine.AudioCapture
 import com.voiceclear.app.engine.AudioSourceOption
 import com.voiceclear.app.engine.RecognitionResult
+import com.voiceclear.app.engine.SpeechProfile
 import com.voiceclear.app.session.DiagnosticExporter
 import com.voiceclear.app.session.DiagnosticLog
 import com.voiceclear.app.session.ErrorCodes
@@ -44,6 +45,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var originalButton: MaterialButton
     private lateinit var cancelButton: MaterialButton
     private lateinit var audioSettingsButton: MaterialButton
+    private lateinit var speechSettingsButton: MaterialButton
     private lateinit var textLabel: TextView
     private lateinit var recognizedText: EditText
     private lateinit var confidenceText: TextView
@@ -129,6 +131,7 @@ class MainActivity : ComponentActivity() {
         originalButton = findViewById(R.id.originalButton)
         cancelButton = findViewById(R.id.cancelButton)
         audioSettingsButton = findViewById(R.id.audioSettingsButton)
+        speechSettingsButton = findViewById(R.id.speechSettingsButton)
         textLabel = findViewById(R.id.textLabel)
         recognizedText = findViewById(R.id.recognizedText)
         confidenceText = findViewById(R.id.confidenceText)
@@ -147,6 +150,8 @@ class MainActivity : ComponentActivity() {
         originalButton.setOnClickListener { viewModel.playOriginal() }
         cancelButton.setOnClickListener { viewModel.cancelSession() }
         audioSettingsButton.setOnClickListener { showAudioSourceDialog() }
+        speechSettingsButton.setOnClickListener { showSpeechProfileDialog() }
+        refreshSpeechProfileSettings()
         refreshModelStatus()
 
         lifecycleScope.launch {
@@ -309,6 +314,42 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 
+    private fun speechProfileLabel(profile: SpeechProfile): String = profile.displayName
+
+    private fun refreshSpeechProfileSettings() {
+        speechSettingsButton.text = getString(
+            R.string.speech_profile_current,
+            speechProfileLabel(viewModel.settings.speechProfile),
+        )
+    }
+
+    private fun showSpeechProfileDialog() {
+        val options = SpeechProfile.ALL
+        val labels = options.map { speechProfileLabel(it) }.toTypedArray()
+        val current = options.indexOf(viewModel.settings.speechProfile)
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.speech_profile_title)
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                val profile = options[which]
+                if (!viewModel.applySpeechProfile(profile)) {
+                    showError(getString(R.string.speech_profile_busy))
+                    return@setSingleChoiceItems
+                }
+                val label = speechProfileLabel(profile)
+                refreshSpeechProfileSettings()
+                Toast.makeText(
+                    this,
+                    getString(R.string.speech_profile_saved, label),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                dialog.dismiss()
+            }
+            .setMessage(R.string.speech_profile_help)
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun renderRecognition(recognition: RecognitionResult) {
         if (renderedRecognition == recognition) return
         renderedRecognition = recognition
@@ -355,6 +396,7 @@ class MainActivity : ComponentActivity() {
         )
         // 按钮可用性完全由真实状态决定，不在异步回调中手工恢复。
         recordButton.isEnabled = state == SessionState.RECORDING || state.canStartNewSession
+        speechSettingsButton.isEnabled = !state.isBusy
 
         val showConfirm = state == SessionState.AWAITING_CONFIRMATION
         confirmButton.visibility = if (showConfirm) View.VISIBLE else View.GONE
@@ -376,7 +418,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (senseVoiceEngine == null) viewModel.ensureRecognitionEngine()
+        // 采集页可能修改共享 profile；即使旧引擎非空，也必须核对并安全重载。
+        viewModel.ensureRecognitionEngine()
+        refreshSpeechProfileSettings()
         refreshModelStatus()
     }
 

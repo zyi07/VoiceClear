@@ -108,12 +108,63 @@ class CaptureStoreTest {
             "transcripts/session_1.jsonl",
             "transcripts/session_2.jsonl",
             "prompts/prompts.json",
+            "prompts/shandong.json",
             "speakers/spk_1.json",
             "consent/spk_1.json",
             "splits/train.txt",
         ).forEach { path -> assertTrue("缺少 ZIP entry: $path", entries.containsKey(path)) }
         assertEquals(2, JSONObject(entries.getValue("manifest.json").decodeToString())
             .getJSONObject("totals").getInt("segments"))
+    }
+
+    @Test
+    fun `metadata export preserves Shandong profile and dialect group`() {
+        grantResearch("spk_sd")
+        val segment = sampleSegment("session_sd", "seg_sd", "spk_sd").copy(
+            promptId = "SD0001",
+            speechProfileId = "shandong",
+            localeTag = "zh-CN",
+            dialectGroup = "jilu",
+        )
+        store.saveSegment(segment.sessionId, segment, ByteArray(32))
+
+        val exported = store.exportMetadata()
+        val transcript = JSONObject(
+            File(exported, "transcripts/session_sd.jsonl").readLines().single(),
+        )
+        assertEquals("shandong", transcript.getString("speechProfileId"))
+        assertEquals("zh-CN", transcript.getString("localeTag"))
+        assertEquals("jilu", transcript.getString("dialectGroup"))
+        val speaker = JSONObject(File(exported, "speakers/spk_sd.json").readText())
+        assertEquals("shandong", speaker.getString("speechProfileId"))
+        assertEquals("zh-CN", speaker.getString("localeTag"))
+        assertEquals("jilu", speaker.getString("dialectGroup"))
+        assertTrue(File(exported, "prompts/shandong.json").isFile)
+        val manifest = JSONObject(File(exported, "manifest.json").readText())
+        assertEquals(
+            "听障相关发音不清的山东方言成人",
+            manifest.getJSONObject("cohort").getString("target"),
+        )
+    }
+
+    @Test
+    fun `mixed profile manifest names both cohorts`() {
+        grantResearch("spk_mix")
+        val mandarin = sampleSegment("session_m", "seg_m", "spk_mix")
+        val shandong = sampleSegment("session_sd", "seg_sd", "spk_mix").copy(
+            promptId = "SD0001",
+            speechProfileId = "shandong",
+            dialectGroup = "jiaoliao",
+        )
+        store.saveSegment(mandarin.sessionId, mandarin, ByteArray(32))
+        store.saveSegment(shandong.sessionId, shandong, ByteArray(32))
+
+        val exported = store.exportMetadata()
+        val manifest = JSONObject(File(exported, "manifest.json").readText())
+        assertEquals(
+            "听障相关发音不清的普通话与山东方言成人",
+            manifest.getJSONObject("cohort").getString("target"),
+        )
     }
 
     @Test
@@ -141,6 +192,10 @@ class CaptureStoreTest {
         assertEquals(2, manifest.getJSONArray("speakers").getJSONObject(0).getInt("sessions"))
         assertEquals("unspecified", manifest.getJSONArray("speakers").getJSONObject(0)
             .getString("severityLevel"))
+        assertEquals(
+            "听障相关发音不清的普通话成人",
+            manifest.getJSONObject("cohort").getString("target"),
+        )
     }
 
     @Test

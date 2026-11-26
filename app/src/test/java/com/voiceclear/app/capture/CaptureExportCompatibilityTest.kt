@@ -216,6 +216,7 @@ class CaptureExportCompatibilityTest {
             assertEquals("生产导出校验失败: " + output, 0, exitCode)
             assertTrue(output.contains("校验通过"))
             assertTrue(File(tempDir, "prompts/prompts.json").isFile)
+            assertTrue(File(tempDir, "prompts/shandong.json").isFile)
         } finally {
             tempDir.deleteRecursively()
             store.clearAll()

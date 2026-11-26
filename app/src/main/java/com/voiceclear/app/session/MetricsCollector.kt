@@ -1,5 +1,6 @@
 package com.voiceclear.app.session
 
+import com.voiceclear.app.engine.SpeechProfile
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -17,6 +18,7 @@ data class SessionMetrics(
     val totalMs: Long = 0,
     val outcome: String = OUTCOME_UNKNOWN,
     val modelVersion: String = "",
+    val speechProfileId: String = SpeechProfile.DEFAULT.id,
     val qualityFlags: List<String> = emptyList(),
 ) {
     companion object {
@@ -89,6 +91,7 @@ class MetricsCollector(private val maxEntries: Int = DEFAULT_MAX_ENTRIES) {
             builder.append("\"totalMs\":").append(metrics.totalMs).append(",")
             builder.append("\"outcome\":\"").append(metrics.outcome).append("\",")
             builder.append("\"modelVersion\":\"").append(metrics.modelVersion).append("\",")
+            builder.append("\"speechProfileId\":\"").append(metrics.speechProfileId).append("\",")
             builder.append("\"qualityFlags\":[")
             metrics.qualityFlags.forEachIndexed { flagIndex, flag ->
                 if (flagIndex > 0) builder.append(",")
