@@ -1,5 +1,35 @@
 # VoiceClear 开发日志
 
+## 2026-11-26 19:20 - 全量代码审查整改：会话、音频、模型与研究数据可信度
+
+**做了什么：**
+
+- 逐项处理 `CODE_REVIEW_2026-11-26.md` 的 11 项 P0、15 项 P1 和 9 项 P2，整改矩阵见 `CODE_REVIEW_REMEDIATION_2026-11-26.md`。
+- 主流程：`SessionController` 增加 generation 与终态失效；生产 `SessionOperationGate` 隔离每会话停止锁；识别/模型加载移入 IO；ViewModel 统一释放资源；Activity 改用 StateFlow + Channel，事件同时校验 ID/generation。
+- 音频与模型：修复 AudioRecord 自动停止/read/join 清理、AudioTrack 创建期 stop 空窗和部分写入；TTS utterance/初始化/停止语义、焦点真实状态、模型 SHA/staging/下载重试及 SenseVoice decode/release 串行化。
+- 研究链路：授权默认拒绝、撤回贯穿导出/校验/评测、转写幂等、逐段 ZIP、真实元数据、保留删除墓碑和受控清理；导入器改为源校验→staging 复验→原子发布。
+- 评测工具：严格处理 unconfirmed/empty/撤回、重复/缺失/多余 ID、音频存在与时长、空参考文本和覆盖率；ASR 配置检查改为安全的受限表达式解析。
+- 二次只读复核追加修复了焦点丢失时尚未 speak、旧播放 finally 影响新播放、无订阅者事件丢失、合成/播放阶段误标和完成/停止线性化问题。
+- 文档：更新 README、CHANGELOG、AUDIT_REPORT 的过期声明，新增 `docs/api-verification-2026-11-26.md`。
+- 提交 hash: 5f32cfc
+
+**实际验证：**
+
+- `./gradlew :app:testDebugUnitTest --rerun-tasks`：33 个测试类，224 项，0 failure / 0 error / 0 skipped。
+- `python3 -m unittest tools.test_tools -v`：51/51 通过。
+- `./gradlew :app:lintDebug`：0 Error / 18 Warning；无 baseline，警告为版本、ABI、资源和 KTX 建议。
+- `assembleDebug`、`assembleRelease`、`checkAsrConfig`、`checkApkPermissions`：全部通过。
+- 产物：Debug APK 60,742,934 字节；Release 未签名 APK 58,534,825 字节。
+- `git diff --cached --check`：通过；两份 docx、package 文件和 scripts/ 未纳入提交。
+
+**待做什么：**
+
+- Gate 3 未执行：移动设备桥无可用设备，且 `/dev/kvm` 不存在。真实麦克风、PCM/TTS 中断、焦点、native 并发、旋转/后台、SAF、真实模型源下载、温升与耗电仍需真机证据。
+- 默认 severity=unspecified 的导出会按设计被研究校验拒绝；补录真实专业顾问记录后才可入库，不得为通过测试伪造 L2。
+- 尚无目标人群真实数据或可信 ASR 质量基线；本轮只证明代码检查、自动化测试和构建结果，不宣称可交付或识别质量达标。
+
+---
+
 ## 2026-11-17 11:45 - 诊断包分析：音频质量已正常；定位并修复状态机失同步（0.11.2）
 
 **输入**：用户第 7 轮真机诊断包（HUAWEI PLA-AL10 / Android 16，4 轮录音，3489 字节）。
