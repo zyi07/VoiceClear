@@ -1,5 +1,29 @@
 # VoiceClear 开发日志
 
+## 2026-11-26 21:15 - 配置 GitHub Actions Debug APK 构建与 Release（0.12.0）
+
+**做了什么：**
+
+- 新增 `.github/workflows/android-release.yml`：支持 `workflow_dispatch` 与 `v*` 标签，构建 job 仅 `contents: read`，Release job 仅 `contents: write`。
+- 云端执行 Python/Android 测试、Lint、Debug 构建、ASR/权限门禁、标签与版本一致性、Debug 签名验证、SHA-256、90 天 artifact 和 GitHub prerelease。
+- 版本提升至 `versionCode=14 / versionName=0.12.0`，新增 `docs/releases/v0.12.0.md`，更新 README 与 CHANGELOG。
+- 用户已明确选择：仅 Android Debug APK，使用调试签名并发布 Release；不作为正式上架包。
+- 提交 hash: fc31404
+
+**本地验证：**
+
+- Python 51/51；Android 测试、Lint、Debug 构建、ASR/权限门禁全部通过。
+- `apksigner verify` 通过；AAPT2 核实包名 `com.voiceclear.app`、versionCode 14、versionName 0.12.0。
+- 工作流 YAML、权限结构与敏感信息扫描通过；Actions 使用核实的完整版本标签，不使用浮动分支。
+- 仓库为 public，Linux runner 的 Actions 分钟按当前 GitHub 公共仓库规则不计私有额度。
+
+**待做什么：**
+
+- 推送 main 与 v0.12.0，跟踪云端 build/release job，核实 Release 附件、校验值和下载链接。
+- Debug 包可安装测试，但真机 Gate 3 仍待执行；正式发布签名不在本次范围内。
+
+---
+
 ## 2026-11-26 19:20 - 全量代码审查整改：会话、音频、模型与研究数据可信度
 
 **做了什么：**
